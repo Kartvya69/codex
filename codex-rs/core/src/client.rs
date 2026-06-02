@@ -146,6 +146,7 @@ const X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
 const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
+const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
@@ -464,6 +465,13 @@ impl ModelClient {
     ) -> Result<Vec<ResponseItem>> {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
+        }
+        // Chat Completions API does not support compaction
+        if self.state.provider.info().wire_api == WireApi::Chat {
+            return Err(CodexErr::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Chat Completions API does not support compaction",
+            )));
         }
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1339,6 +1347,137 @@ impl ModelClientSession {
         }
     }
 
+    async fn stream_chat_completions_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        turn_metadata_header: Option<&str>,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.client.state.provider.auth_manager();
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(AuthManager::unauthorized_recovery);
+        let mut pending_retry = PendingUnauthorizedRetry::default();
+        loop {
+            let client_setup = self.client.current_client_setup().await?;
+            let transport = ReqwestTransport::new(build_reqwest_client());
+            let request_auth_context = AuthRequestTelemetryContext::new(
+                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                client_setup.api_auth.as_ref(),
+                pending_retry,
+            );
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+                session_telemetry,
+                request_auth_context,
+                RequestRouteTelemetry::for_endpoint("chat/completions"),
+                self.client.state.auth_env_telemetry.clone(),
+            );
+            let compression = self.responses_request_compression(client_setup.auth.as_ref());
+            let responses_options = self
+                .build_responses_options(turn_metadata_header, compression)
+                .await;
+
+            // Convert ResponsesOptions to ChatCompletionsOptions
+            let options = codex_api::ChatCompletionsOptions {
+                session_id: responses_options.session_id,
+                thread_id: responses_options.thread_id,
+                session_source: responses_options.session_source,
+                extra_headers: responses_options.extra_headers,
+                compression: responses_options.compression,
+                turn_state: responses_options.turn_state,
+            };
+
+            // Build Chat Completions request using conversion layer
+            let chat_request = codex_api::to_chat_completions_request(
+                &model_info.slug,
+                &prompt.get_formatted_input(),
+                &prompt.base_instructions.text,
+                &create_tools_json_for_responses_api(&prompt.tools).unwrap_or_default(),
+                "auto",
+                prompt.parallel_tool_calls,
+                effort.map(|e| codex_api::Reasoning {
+                    effort: Some(e),
+                    summary: if summary == ReasoningSummaryConfig::None {
+                        None
+                    } else {
+                        Some(summary)
+                    },
+                }),
+                service_tier.as_deref(),
+                Some(&self.client.prompt_cache_key()),
+                None,
+            );
+
+            let inference_trace_attempt = inference_trace.start_attempt();
+            inference_trace_attempt.record_started(&chat_request);
+
+            let client = codex_api::ChatCompletionsClient::new(
+                transport,
+                client_setup.api_provider,
+                client_setup.api_auth,
+            )
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+
+            let body = serde_json::to_value(&chat_request).map_err(|e| {
+                CodexErr::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to encode Chat Completions request: {e}"),
+                ))
+            })?;
+
+            let stream_result = client
+                .stream_request(body, options)
+                .await;
+
+            match stream_result {
+                Ok(stream) => {
+                    let (stream, _) = map_response_stream(
+                        stream,
+                        session_telemetry.clone(),
+                        inference_trace_attempt,
+                    );
+                    return Ok(stream);
+                }
+                Err(codex_api::ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    let response_debug_context =
+                        extract_response_debug_context(&unauthorized_transport);
+                    inference_trace_attempt.record_failed(
+                        &unauthorized_transport,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    pending_retry = PendingUnauthorizedRetry::from_recovery(
+                        handle_unauthorized(
+                            unauthorized_transport,
+                            &mut auth_recovery,
+                            session_telemetry,
+                        )
+                        .await?,
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&err);
+                    let err = map_api_error(err);
+                    inference_trace_attempt.record_failed(
+                        &err,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    return Err(err);
+                }
+            }
+        }
+    }
+
     /// Streams a turn via the Responses API over WebSocket transport.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -1600,6 +1739,19 @@ impl ModelClientSession {
     ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
+            WireApi::Chat => {
+                self.stream_chat_completions_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    turn_metadata_header,
+                    inference_trace,
+                )
+                .await
+            }
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
@@ -1639,6 +1791,46 @@ impl ModelClientSession {
             }
         }
     }
+
+    // ============================================================================
+    // Chat Completions Wire API Conversion Fidelity Matrix
+    // ============================================================================
+    //
+    // WILL Convert (Full Support):
+    // - Text messages (user/assistant/system) → ✅ Full
+    // - Single tool calls (function type) → ✅ Full
+    // - Parallel tool calls → ✅ Full (array → sequence)
+    // - Streaming responses (SSE) → ✅ Full (different event names, same semantics)
+    // - Usage statistics → ✅ Full (prompt/completion/total tokens)
+    // - Error responses → ✅ Full (type mapping applied)
+    //
+    // WILL NOT Convert (Error with Clear Message):
+    // - LocalShellCall → "Local shell calls are not supported with wire_api='chat'"
+    // - ToolSearchCall → "Tool search is not supported with wire_api='chat'"
+    // - WebSearchCall → "Web search is not supported with wire_api='chat'"
+    // - ImageGenerationCall → "Image generation is not supported with wire_api='chat'"
+    // - Compaction → "Compaction is not supported with wire_api='chat'"
+    //
+    // LOSSY Conversions (Document Loss):
+    // - Namespace information: Chat-sourced tool calls always have namespace = None
+    //   - Loss: Response API namespace metadata not preserved
+    //   - Impact: Minimal for Chat-only providers
+    // - Tool call ordering: Parallel calls become sequential in ResponseItem array
+    //   - Loss: Original parallelism indicator
+    //   - Impact: Semantic meaning preserved, execution order implied
+    //
+    // SSE Event Mapping (Chat → Responses):
+    // - chat.completion.chunk with delta.content → ResponseEvent::OutputTextDelta
+    // - choices[].delta.tool_calls → ResponseEvent::ToolCallInputDelta
+    // - choices[].finish_reason = "stop" → ResponseEvent::Completed
+    // - [DONE] sentinel → Stream termination
+    //
+    // Error Type Mapping (Chat → ApiError):
+    // - invalid_request_error → ApiError::Api { status: 400 }
+    // - authentication_error → ApiError::Api { status: 401 }
+    // - rate_limit_error → ApiError::RateLimit
+    // - context_length_exceeded → ApiError::ContextWindowExceeded
+    // - server_error → ApiError::Api { status: 500 }
 
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
     ///

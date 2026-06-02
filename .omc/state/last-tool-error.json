@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd /root/codex/codex-rs && cargo test -p model-provider-info 2>&1\",\"description\":\"Run model-provider-info tests from codex-rs directory\"}",
+  "error": "Exit code 101\ninfo: syncing channel updates for 1.95.0-x86_64-unknown-linux-gnu\ninfo: latest update on 2026-04-16 for version 1.95.0 (59807616e 2026-04-14)\ninfo: downloading 7 components\n    Updating git repository `https://github.com/openai-oss-forks/tungstenite-rs`\n    Updating git repository `https://github.com/nornagon/crossterm`\n    Updating git repository `https://github.com/nornagon/ratatui`\n    Updating git repository `https://github.com/openai-oss-forks/tokio-tungstenite`\n    Updating c...",
+  "timestamp": "2026-06-02T04:08:28.397Z",
+  "retry_count": 1
+}

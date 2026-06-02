@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/root/codex/codex-rs/codex-api/src/sse.rs\"}",
+  "error": "File does not exist. Note: your current working directory is /root/codex/codex-rs/model-provider-info. Did you mean sse?",
+  "timestamp": "2026-06-02T04:19:45.933Z",
+  "retry_count": 1
+}

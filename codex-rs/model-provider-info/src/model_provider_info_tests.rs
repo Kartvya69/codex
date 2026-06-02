@@ -107,7 +107,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 }
 
 #[test]
-fn test_deserialize_chat_wire_api_shows_helpful_error() {
+fn test_deserialize_chat_wire_api_succeeds() {
     let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -115,8 +115,9 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-    let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-    assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
+    assert_eq!(provider.name, "OpenAI using Chat Completions");
 }
 
 #[test]
@@ -455,4 +456,159 @@ refresh_interval_ms = 0
     let auth = provider.auth.expect("auth config should deserialize");
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
+}
+
+#[test]
+fn deserialize_wire_api_chat() {
+    let provider_toml = r#"
+name = "OpenAI using Chat Completions"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "chat"
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
+}
+
+#[test]
+fn serialize_wire_api_chat() {
+    let provider = ModelProviderInfo {
+        name: "Test".to_string(),
+        wire_api: WireApi::Chat,
+        ..ModelProviderInfo::default()
+    };
+
+    let serialized = toml::to_string(&provider).unwrap();
+    assert!(serialized.contains("wire_api = \"chat\""));
+}
+
+#[test]
+fn display_wire_api_chat() {
+    assert_eq!(format!("{}", WireApi::Chat), "chat");
+}
+
+#[test]
+fn deserialize_wire_api_responses() {
+    let provider_toml = r#"
+name = "OpenAI using Responses API"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Responses);
+}
+
+#[test]
+fn serialize_wire_api_responses() {
+    let provider = ModelProviderInfo {
+        name: "Test".to_string(),
+        wire_api: WireApi::Responses,
+        ..ModelProviderInfo::default()
+    };
+
+    let serialized = toml::to_string(&provider).unwrap();
+    assert!(serialized.contains("wire_api = \"responses\""));
+}
+
+#[test]
+fn display_wire_api_responses() {
+    assert_eq!(format!("{}", WireApi::Responses), "responses");
+}
+
+// ============================================================================
+// Phase 2: Provider Configuration Layer Tests
+// ============================================================================
+
+#[test]
+fn openai_defaults_to_chat_completions() {
+    let provider = ModelProviderInfo::create_openai_provider(None);
+    assert_eq!(provider.default_wire_api(), WireApi::Chat);
+}
+
+#[test]
+fn amazon_bedrock_defaults_to_chat_completions() {
+    let provider = ModelProviderInfo::create_amazon_bedrock_provider(None);
+    assert_eq!(provider.default_wire_api(), WireApi::Chat);
+}
+
+#[test]
+fn azure_defaults_to_responses_for_backward_compat() {
+    // Azure provider is identified by "Azure" name
+    let provider = ModelProviderInfo {
+        name: "Azure".to_string(),
+        base_url: Some("https://example.com/openai".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    assert_eq!(provider.default_wire_api(), WireApi::Responses);
+}
+
+#[test]
+fn ollama_defaults_to_chat_completions() {
+    let provider = create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses);
+    assert_eq!(provider.default_wire_api(), WireApi::Chat);
+}
+
+#[test]
+fn lmstudio_defaults_to_chat_completions() {
+    let provider = create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses);
+    assert_eq!(provider.default_wire_api(), WireApi::Chat);
+}
+
+#[test]
+fn claude_defaults_to_responses() {
+    // Claude provider is identified by "Anthropic" or "Claude" name
+    let provider = ModelProviderInfo {
+        name: "Anthropic".to_string(),
+        base_url: Some("https://api.anthropic.com".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    assert_eq!(provider.default_wire_api(), WireApi::Responses);
+}
+
+#[test]
+fn provider_supports_wire_api_responses() {
+    let provider = ModelProviderInfo::create_openai_provider(None);
+    assert!(provider.supports_wire_api(WireApi::Responses));
+}
+
+#[test]
+fn provider_supports_wire_api_chat() {
+    let provider = ModelProviderInfo::create_openai_provider(None);
+    assert!(provider.supports_wire_api(WireApi::Chat));
+}
+
+#[test]
+fn chat_with_websockets_fails_validation() {
+    let provider = ModelProviderInfo {
+        wire_api: WireApi::Chat,
+        supports_websockets: true,
+        ..ModelProviderInfo::default()
+    };
+    assert_eq!(
+        provider.validate(),
+        Err("wire_api Chat cannot be combined with supports_websockets".to_string())
+    );
+}
+
+#[test]
+fn responses_with_websockets_passes_validation() {
+    let provider = ModelProviderInfo {
+        wire_api: WireApi::Responses,
+        supports_websockets: true,
+        ..ModelProviderInfo::default()
+    };
+    assert_eq!(provider.validate(), Ok(()));
+}
+
+#[test]
+fn chat_without_websockets_passes_validation() {
+    let provider = ModelProviderInfo {
+        wire_api: WireApi::Chat,
+        supports_websockets: false,
+        ..ModelProviderInfo::default()
+    };
+    assert_eq!(provider.validate(), Ok(()));
 }

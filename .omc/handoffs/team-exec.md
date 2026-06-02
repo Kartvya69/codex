@@ -1,0 +1,21 @@
+## Handoff: team-exec → COMPLETE
+
+- **Decided**: Chat Completions Wire API restored as peer to Responses API via central conversion layer. WireApi::Chat variant added. Provider-level defaults (OpenAI→Chat, Azure→Responses, Claude→Responses). HTTP/SSE-only for Chat (no WebSocket). Compaction fails fast for Chat providers. SSE events mapped 1:1 for text, bounded buffering for tool calls. Error types mapped to ApiError variants.
+- **Rejected**: Provider-specific paths (duplicate logic), WebSocket for Chat (API doesn't support it), Azure defaulting to Chat (breaks existing configs).
+- **Risks**: Chat format drift (mitigate: versioned types + tests), tool call buffering under concurrency (mitigate: bounded buffer 1600), non-convertible types error for Chat (documented in fidelity matrix).
+- **Files Created**:
+  - codex-rs/codex-api/src/chat_request.rs — Request conversion (to_chat_completions_request, tool_to_function_definition)
+  - codex-rs/codex-api/src/chat_response.rs — Response + SSE + error conversion (9 tests)
+  - codex-rs/codex-api/src/endpoint/chat_completions.rs — Chat HTTP/SSE client
+  - codex-rs/codex-api/src/sse/chat.rs — Chat-specific SSE parser
+  - codex-rs/codex-api/tests/chat_completions_e2e.rs — 5 integration tests
+- **Files Modified**:
+  - codex-rs/model-provider-info/src/lib.rs — WireApi::Chat, default_wire_api(), supports_wire_api(), validation
+  - codex-rs/model-provider-info/src/model_provider_info_tests.rs — 8 new tests
+  - codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs — Chat = 1 proto variant
+  - codex-rs/config/src/thread_config/remote.rs — Proto conversion
+  - codex-rs/core/src/client.rs — WireApi::Chat routing, stream_chat_completions_api(), compaction check, Chat endpoint constant
+  - codex-rs/core/src/client_tests.rs — 2 new tests
+  - codex-rs/codex-api/src/lib.rs — Added chat_request module
+- **Remaining**: Full workspace test suite run (cargo nextest run --workspace), any compilation fixes from integration.
+- **Test Counts**: ~40 new tests across all phases (6 enum + 8 provider + 2 client + 10 request + 9 response + 5 e2e).

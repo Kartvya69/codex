@@ -43,7 +43,6 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -51,6 +50,8 @@ pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WireApi {
+    /// The Chat Completions API exposed by OpenAI at `/v1/chat/completions`.
+    Chat,
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
@@ -59,6 +60,7 @@ pub enum WireApi {
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
+            Self::Chat => "chat",
             Self::Responses => "responses",
         };
         f.write_str(value)
@@ -72,9 +74,9 @@ impl<'de> Deserialize<'de> for WireApi {
     {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
+            "chat" => Ok(Self::Chat),
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            _ => Err(serde::de::Error::unknown_variant(&value, &["chat", "responses"])),
         }
     }
 }
@@ -148,6 +150,11 @@ pub struct ModelProviderAwsAuthInfo {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
+        // Chat Completions API cannot be used with WebSocket transport
+        if self.wire_api == WireApi::Chat && self.supports_websockets {
+            return Err("wire_api Chat cannot be combined with supports_websockets".to_string());
+        }
+
         if self.aws.is_some() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
@@ -397,6 +404,25 @@ impl ModelProviderInfo {
 
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()
+    }
+
+    /// Returns the default wire API for this provider based on its name/type.
+    /// Most providers default to Chat Completions, but Azure and Claude default to Responses
+    /// for backward compatibility.
+    pub fn default_wire_api(&self) -> WireApi {
+        // Azure and Claude (Anthropic) default to Responses API for backward compatibility
+        if self.name == "Azure" || self.name.contains("Anthropic") || self.name.contains("Claude") {
+            WireApi::Responses
+        } else {
+            // OpenAI, Bedrock, Ollama, LMStudio, and others default to Chat Completions
+            WireApi::Chat
+        }
+    }
+
+    /// Checks if this provider supports the given wire API.
+    /// All providers support both Chat and Responses APIs.
+    pub fn supports_wire_api(&self, api: WireApi) -> bool {
+        matches!(api, WireApi::Chat | WireApi::Responses)
     }
 }
 
