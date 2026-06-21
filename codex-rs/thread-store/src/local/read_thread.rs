@@ -55,6 +55,7 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
@@ -115,6 +116,7 @@ pub(super) async fn read_thread_by_rollout_path(
         });
     }
     if let Some(metadata) = read_sqlite_metadata(store, thread.thread_id).await {
+        thread.recency_at = metadata.recency_at;
         let existing_git_info = thread.git_info.take();
         let (fallback_sha, fallback_branch, fallback_origin_url) = match existing_git_info {
             Some(info) => (
@@ -143,6 +145,25 @@ async fn resolve_requested_rollout_path(
     } else {
         rollout_path
     };
+    match tokio::fs::metadata(path.as_path()).await {
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: format!(
+                    "failed to resolve rollout path `{}`: path is a directory",
+                    path.display()
+                ),
+            });
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: format!(
+                    "failed to resolve rollout path `{}`: path is not a file",
+                    path.display()
+                ),
+            });
+        }
+        _ => {}
+    }
     let Some(path) = codex_rollout::existing_rollout_path(path.as_path()).await else {
         return Err(ThreadStoreError::InvalidRequest {
             message: format!(
@@ -306,6 +327,7 @@ async fn stored_thread_from_sqlite_metadata(
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
     StoredThread {
         thread_id: metadata.id,
+        extra_config: None,
         rollout_path: Some(rollout_path),
         forked_from_id,
         parent_thread_id,
@@ -320,6 +342,7 @@ async fn stored_thread_from_sqlite_metadata(
         reasoning_effort: metadata.reasoning_effort,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
+        recency_at: metadata.recency_at,
         archived_at: metadata.archived_at,
         cwd: metadata.cwd,
         cli_version: metadata.cli_version,
@@ -371,6 +394,7 @@ fn stored_thread_from_meta_line(
     let rollout_path = codex_rollout::plain_rollout_path(path.as_path());
     StoredThread {
         thread_id: meta_line.meta.id,
+        extra_config: None,
         rollout_path: Some(rollout_path),
         forked_from_id: meta_line.meta.forked_from_id,
         parent_thread_id: meta_line.meta.parent_thread_id,
@@ -385,6 +409,7 @@ fn stored_thread_from_meta_line(
         reasoning_effort: None,
         created_at,
         updated_at,
+        recency_at: updated_at,
         archived_at: archived.then_some(updated_at),
         cwd: meta_line.meta.cwd,
         cli_version: meta_line.meta.cli_version,
@@ -526,6 +551,10 @@ mod tests {
         );
         builder.model_provider = Some(config.default_model_provider_id.clone());
         builder.git_branch = Some("sqlite-branch".to_string());
+        let recency_at = chrono::DateTime::parse_from_rfc3339("2026-01-03T12:00:00Z")
+            .expect("timestamp should parse")
+            .with_timezone(&Utc);
+        builder.recency_at = Some(recency_at);
         runtime
             .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
             .await
@@ -541,6 +570,7 @@ mod tests {
             .expect("read thread by rollout path");
 
         let git_info = thread.git_info.expect("git info should be present");
+        assert_eq!(thread.recency_at, recency_at);
         assert_eq!(git_info.branch.as_deref(), Some("sqlite-branch"));
         assert_eq!(
             git_info.commit_hash.as_ref().map(|sha| sha.0.as_str()),
@@ -710,8 +740,9 @@ mod tests {
         builder.model_provider = Some(config.default_model_provider_id.clone());
         builder.cwd = home.path().to_path_buf();
         let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        let permission_profile: PermissionProfile = PermissionProfile::Disabled;
         metadata.sandbox_policy =
-            serde_json::to_string(&PermissionProfile::Disabled).expect("serialize profile");
+            serde_json::to_string(&permission_profile).expect("serialize profile");
         runtime
             .upsert_thread(&metadata)
             .await

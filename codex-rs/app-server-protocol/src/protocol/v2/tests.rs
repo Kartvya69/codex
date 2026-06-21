@@ -27,6 +27,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandbox
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
+use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
@@ -34,6 +35,8 @@ use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -58,6 +61,30 @@ fn test_absolute_path() -> AbsolutePathBuf {
 }
 
 #[test]
+fn thread_sources_round_trip_as_scalar_labels() {
+    for (source, label) in [
+        (ThreadSource::User, "user"),
+        (ThreadSource::Subagent, "subagent"),
+        (
+            ThreadSource::Feature("automation".to_string()),
+            "automation",
+        ),
+        (ThreadSource::MemoryConsolidation, "memory_consolidation"),
+    ] {
+        let value = serde_json::to_value(&source).expect("serialize thread source");
+
+        assert_eq!(value, json!(label));
+        assert_eq!(
+            serde_json::from_value::<ThreadSource>(value).expect("deserialize thread source"),
+            source
+        );
+
+        let core_source: codex_protocol::protocol::ThreadSource = source.clone().into();
+        assert_eq!(ThreadSource::from(core_source), source);
+    }
+}
+
+#[test]
 fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagent() {
     assert_eq!(
         serde_json::to_string(&ApprovalsReviewer::User).expect("serialize reviewer"),
@@ -65,7 +92,7 @@ fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagen
     );
     assert_eq!(
         serde_json::to_string(&ApprovalsReviewer::AutoReview).expect("serialize reviewer"),
-        "\"guardian_subagent\""
+        "\"auto_review\""
     );
 
     for value in ["user", "auto_review", "guardian_subagent"] {
@@ -148,6 +175,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             model_provider: "openai".to_string(),
             created_at: 1,
             updated_at: 1,
+            recency_at: Some(1),
             status: ThreadStatus::Idle,
             path: None,
             cwd: absolute_path("tmp"),
@@ -171,6 +199,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
             next_cursor: Some("cursor_next".to_string()),
@@ -349,13 +378,14 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
                     ..Default::default()
                 }),
             }],
+            source: None,
         }
     );
 }
 
 #[test]
-fn command_execution_request_approval_rejects_relative_additional_permission_paths() {
-    let err = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+fn command_execution_request_approval_localization_rejects_relative_additional_permission_paths() {
+    let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
         "threadId": "thr_123",
         "turnId": "turn_123",
         "itemId": "call_123",
@@ -376,12 +406,14 @@ fn command_execution_request_approval_rejects_relative_additional_permission_pat
         "proposedNetworkPolicyAmendments": null,
         "availableDecisions": null
     }))
-    .expect_err("relative additional permission paths should fail");
-    assert!(
-        err.to_string()
-            .contains("AbsolutePathBuf deserialized without a base path"),
-        "unexpected error: {err}"
-    );
+    .expect("API paths should deserialize before localization");
+    let additional_permissions = params
+        .additional_permissions
+        .expect("additional permissions should be present");
+
+    let err = CoreAdditionalPermissionProfile::try_from(additional_permissions)
+        .expect_err("relative additional permission paths should fail localization");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -400,6 +432,7 @@ fn permissions_request_approval_uses_request_permission_profile() {
         "threadId": "thr_123",
         "turnId": "turn_123",
         "itemId": "call_123",
+        "environmentId": "remote",
         "startedAtMs": 1,
         "cwd": absolute_path_string("repo"),
         "reason": "Select a workspace root",
@@ -416,6 +449,7 @@ fn permissions_request_approval_uses_request_permission_profile() {
     .expect("permissions request should deserialize");
 
     assert_eq!(params.cwd, absolute_path("repo"));
+    assert_eq!(params.environment_id.as_deref(), Some("remote"));
     assert_eq!(
         params.permissions,
         RequestPermissionProfile {
@@ -424,12 +458,12 @@ fn permissions_request_approval_uses_request_permission_profile() {
             }),
             file_system: Some(AdditionalFileSystemPermissions {
                 read: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
-                        .expect("path must be absolute"),
+                    serde_json::from_value(json!(read_only_path))
+                        .expect("API path string should deserialize")
                 ]),
                 write: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
-                        .expect("path must be absolute"),
+                    serde_json::from_value(json!(read_write_path))
+                        .expect("API path string should deserialize")
                 ]),
                 glob_scan_max_depth: None,
                 entries: None,
@@ -438,7 +472,8 @@ fn permissions_request_approval_uses_request_permission_profile() {
     );
 
     assert_eq!(
-        CoreRequestPermissionProfile::from(params.permissions),
+        CoreRequestPermissionProfile::try_from(params.permissions)
+            .expect("API paths should convert to native paths"),
         CoreRequestPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -532,7 +567,8 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
         }
     );
     assert_eq!(
-        CoreFileSystemPermissions::from(permissions),
+        CoreFileSystemPermissions::try_from(permissions)
+            .expect("API paths should convert to native paths"),
         core_permissions
     );
 }
@@ -547,23 +583,25 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     );
 
     let permissions = AdditionalFileSystemPermissions::from(core_permissions.clone());
+    let read_only_api_path = LegacyAppPathString::from_abs_path(&read_only_path);
+    let read_write_api_path = LegacyAppPathString::from_abs_path(&read_write_path);
 
     assert_eq!(
         permissions,
         AdditionalFileSystemPermissions {
-            read: Some(vec![read_only_path.clone()]),
-            write: Some(vec![read_write_path.clone()]),
+            read: Some(vec![read_only_api_path.clone()]),
+            write: Some(vec![read_write_api_path.clone()]),
             glob_scan_max_depth: None,
             entries: Some(vec![
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_only_path,
+                        path: read_only_api_path,
                     },
                     access: FileSystemAccessMode::Read,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: read_write_path,
+                        path: read_write_api_path,
                     },
                     access: FileSystemAccessMode::Write,
                 },
@@ -571,7 +609,8 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
         }
     );
     assert_eq!(
-        CoreFileSystemPermissions::from(permissions),
+        CoreFileSystemPermissions::try_from(permissions)
+            .expect("API paths should convert to native paths"),
         core_permissions
     );
 }
@@ -640,12 +679,12 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
             }),
             file_system: Some(AdditionalFileSystemPermissions {
                 read: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
-                        .expect("path must be absolute"),
+                    serde_json::from_value(json!(read_only_path))
+                        .expect("API path string should deserialize")
                 ]),
                 write: Some(vec![
-                    AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
-                        .expect("path must be absolute"),
+                    serde_json::from_value(json!(read_write_path))
+                        .expect("API path string should deserialize")
                 ]),
                 glob_scan_max_depth: None,
                 entries: None,
@@ -654,7 +693,8 @@ fn permissions_request_approval_response_uses_granted_permission_profile_without
     );
 
     assert_eq!(
-        CoreAdditionalPermissionProfile::from(response.permissions),
+        CoreAdditionalPermissionProfile::try_from(response.permissions)
+            .expect("API paths should convert to native paths"),
         CoreAdditionalPermissionProfile {
             network: Some(CoreNetworkPermissions {
                 enabled: Some(true),
@@ -1672,10 +1712,12 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             allowed_approvals_reviewers: None,
             allowed_sandbox_modes: None,
             allowed_windows_sandbox_implementations: None,
-            allowed_permissions: None,
+            allowed_permission_profiles: None,
+            default_permissions: None,
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
             allow_appshots: None,
+            allow_remote_control: None,
             computer_use: None,
             feature_requirements: None,
             hooks: None,
@@ -1862,6 +1904,40 @@ fn mcp_server_elicitation_request_from_core_form_request() {
 }
 
 #[test]
+fn mcp_server_elicitation_request_from_core_openai_form_request() {
+    let requested_schema = json!({
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "openai/imagePicker",
+                "title": "Template",
+                "items": [{
+                    "id": "monthly-review",
+                    "title": "Monthly review",
+                    "image": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=",
+                }],
+            },
+        },
+        "required": ["template"],
+    });
+    let request = McpServerElicitationRequest::try_from(CoreElicitationRequest::OpenAiForm {
+        meta: None,
+        message: "Choose a report".to_string(),
+        requested_schema: requested_schema.clone(),
+    })
+    .expect("OpenAI form request should convert");
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequest::OpenAiForm {
+            meta: None,
+            message: "Choose a report".to_string(),
+            requested_schema,
+        }
+    );
+}
+
+#[test]
 fn mcp_elicitation_schema_matches_mcp_2025_11_25_primitives() {
     let schema: McpElicitationSchema = serde_json::from_value(json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2033,6 +2109,33 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
                 "authStatus": "unsupported",
             }],
             "nextCursor": null,
+        })
+    );
+}
+
+#[test]
+fn mcp_server_status_updated_accepts_missing_thread_id() {
+    let notification: McpServerStatusUpdatedNotification = serde_json::from_value(json!({
+        "name": "optional_broken",
+        "status": "failed",
+        "error": "handshake failed",
+    }))
+    .expect("notification without threadId should deserialize");
+
+    let expected = McpServerStatusUpdatedNotification {
+        thread_id: None,
+        name: "optional_broken".to_string(),
+        status: McpServerStartupState::Failed,
+        error: Some("handshake failed".to_string()),
+    };
+    assert_eq!(notification, expected);
+    assert_eq!(
+        serde_json::to_value(notification).expect("notification should serialize"),
+        json!({
+            "threadId": null,
+            "name": "optional_broken",
+            "status": "failed",
+            "error": "handshake failed",
         })
     );
 }
@@ -2514,7 +2617,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         server: "server".to_string(),
         tool: "tool".to_string(),
         arguments: json!({"arg": "value"}),
+        connector_id: Some("calendar".to_string()),
         mcp_app_resource_uri: Some("app://connector".to_string()),
+        link_id: Some("link_calendar".to_string()),
         plugin_id: Some("sample@test".to_string()),
         status: CoreMcpToolCallStatus::InProgress,
         result: None,
@@ -2530,6 +2635,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             tool: "tool".to_string(),
             status: McpToolCallStatus::InProgress,
             arguments: json!({"arg": "value"}),
+            app_context: Some(McpToolCallAppContext {
+                connector_id: "calendar".to_string(),
+                link_id: Some("link_calendar".to_string()),
+                resource_uri: Some("app://connector".to_string()),
+            }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
             plugin_id: Some("sample@test".to_string()),
             result: None,
@@ -2543,7 +2653,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         server: "server".to_string(),
         tool: "tool".to_string(),
         arguments: JsonValue::Null,
+        connector_id: None,
         mcp_app_resource_uri: None,
+        link_id: None,
         plugin_id: None,
         status: CoreMcpToolCallStatus::Completed,
         result: Some(CallToolResult {
@@ -2564,6 +2676,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             tool: "tool".to_string(),
             status: McpToolCallStatus::Completed,
             arguments: JsonValue::Null,
+            app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
             result: Some(Box::new(McpToolCallResult {
@@ -2574,6 +2687,49 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             error: None,
             duration_ms: Some(42),
         }
+    );
+}
+
+#[test]
+fn mcp_tool_call_app_context_serializes_connector_id() {
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "codex_apps".to_string(),
+        tool: "calendar.create_event".to_string(),
+        status: McpToolCallStatus::InProgress,
+        arguments: json!({}),
+        app_context: Some(McpToolCallAppContext {
+            connector_id: "calendar".to_string(),
+            link_id: Some("link_calendar".to_string()),
+            resource_uri: Some("app://connector".to_string()),
+        }),
+        mcp_app_resource_uri: Some("app://connector".to_string()),
+        plugin_id: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(item).expect("MCP tool call should serialize"),
+        json!({
+            "type": "mcpToolCall",
+            "id": "mcp-1",
+            "server": "codex_apps",
+            "tool": "calendar.create_event",
+            "status": "inProgress",
+            "arguments": {},
+            "appContext": {
+                "connectorId": "calendar",
+                "linkId": "link_calendar",
+                "resourceUri": "app://connector",
+            },
+            "mcpAppResourceUri": "app://connector",
+            "pluginId": null,
+            "result": null,
+            "error": null,
+            "durationMs": null,
+        })
     );
 }
 
@@ -2851,6 +3007,7 @@ fn plugin_list_params_serializes_marketplace_kind_filter() {
                 PluginListMarketplaceKind::Vertical,
                 PluginListMarketplaceKind::WorkspaceDirectory,
                 PluginListMarketplaceKind::SharedWithMe,
+                PluginListMarketplaceKind::CreatedByMeRemote,
             ]),
         })
         .unwrap(),
@@ -2861,6 +3018,7 @@ fn plugin_list_params_serializes_marketplace_kind_filter() {
                 "vertical",
                 "workspace-directory",
                 "shared-with-me",
+                "created-by-me-remote",
             ],
         }),
     );
@@ -3476,56 +3634,6 @@ fn dynamic_tool_response_serializes_text_and_image_content_items() {
 }
 
 #[test]
-fn dynamic_tool_spec_deserializes_defer_loading() {
-    let value = json!({
-        "name": "lookup_ticket",
-        "description": "Fetch a ticket",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" }
-            }
-        },
-        "deferLoading": true,
-    });
-
-    let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
-
-    assert_eq!(
-        actual,
-        DynamicToolSpec {
-            namespace: None,
-            name: "lookup_ticket".to_string(),
-            description: "Fetch a ticket".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" }
-                }
-            }),
-            defer_loading: true,
-        }
-    );
-}
-
-#[test]
-fn dynamic_tool_spec_legacy_expose_to_context_inverts_to_defer_loading() {
-    let value = json!({
-        "name": "lookup_ticket",
-        "description": "Fetch a ticket",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        },
-        "exposeToContext": false,
-    });
-
-    let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
-
-    assert!(actual.defer_loading);
-}
-
-#[test]
 fn thread_start_params_preserve_explicit_null_service_tier() {
     let params: ThreadStartParams =
         serde_json::from_value(json!({ "serviceTier": null })).expect("params should deserialize");
@@ -3579,16 +3687,65 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         serde_json::from_value(response.clone()).expect("thread/start response");
     let resume: ThreadResumeResponse =
         serde_json::from_value(response.clone()).expect("thread/resume response");
-    let fork: ThreadForkResponse = serde_json::from_value(response).expect("thread/fork response");
+    let fork: ThreadForkResponse =
+        serde_json::from_value(response.clone()).expect("thread/fork response");
 
-    assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.thread.parent_thread_id, None);
-    assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
-    assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.thread.recency_at, None);
+    assert_eq!(
+        resume.instruction_sources,
+        Vec::<LegacyAppPathString>::new()
+    );
+    assert_eq!(fork.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(resume.initial_turns_page, None);
     assert_eq!(fork.active_permission_profile, None);
+    assert_eq!(
+        (
+            start.multi_agent_mode,
+            resume.multi_agent_mode,
+            fork.multi_agent_mode,
+        ),
+        (None, None, None)
+    );
+
+    let foreign_source: LegacyAppPathString =
+        serde_json::from_value(json!(r"C:\workspace\AGENTS.md")).expect("foreign source");
+    let mut response_with_foreign_source = response;
+    response_with_foreign_source["instructionSources"] = json!([foreign_source.as_str()]);
+    let start: ThreadStartResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/start response with foreign source");
+    let resume: ThreadResumeResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/resume response with foreign source");
+    let fork: ThreadForkResponse = serde_json::from_value(response_with_foreign_source)
+        .expect("thread/fork response with foreign source");
+    assert_eq!(start.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(resume.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(fork.instruction_sources, vec![foreign_source]);
+    let foreign_source_uri =
+        PathUri::parse("file:///C:/workspace/AGENTS.md").expect("foreign source URI");
+    assert_eq!(
+        start.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        resume.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        fork.instruction_source_path_uris(),
+        vec![foreign_source_uri]
+    );
+}
+
+#[test]
+fn thread_recency_sort_key_serializes_as_snake_case() {
+    assert_eq!(
+        serde_json::to_value(ThreadSortKey::RecencyAt).expect("sort key should serialize"),
+        json!("recency_at")
+    );
 }
 
 #[test]
@@ -3626,11 +3783,56 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         summary: None,
         output_schema: None,
         collaboration_mode: None,
+        multi_agent_mode: None,
         personality: None,
     };
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn turn_start_params_round_trip_multi_agent_mode() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("turn/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
+    );
+}
+
+#[test]
+fn thread_start_params_round_trip_multi_agent_mode() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("thread/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
+    );
 }
 
 #[test]
@@ -3706,7 +3908,14 @@ fn thread_settings_update_params_preserve_field_level_experimental_gates() {
 
 #[test]
 fn turn_start_params_round_trip_environments() {
-    let cwd = test_absolute_path();
+    // Use a path foreign to the test host so this exercises syntax preservation instead of the
+    // host-native conversion performed by test_absolute_path().
+    #[cfg(windows)]
+    let raw_cwd = "/workspace";
+    #[cfg(not(windows))]
+    let raw_cwd = r"C:\workspace";
+    let cwd: LegacyAppPathString =
+        serde_json::from_value(json!(raw_cwd)).expect("API path should deserialize");
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
@@ -3789,22 +3998,19 @@ fn turn_start_params_treat_null_or_omitted_environments_as_default() {
 }
 
 #[test]
-fn turn_start_params_reject_relative_environment_cwd() {
-    let err = serde_json::from_value::<TurnStartParams>(json!({
+fn realtime_append_text_defaults_role_to_user() {
+    let params = serde_json::from_value::<ThreadRealtimeAppendTextParams>(json!({
         "threadId": "thread_123",
-        "input": [],
-        "environments": [
-            {
-                "environmentId": "local",
-                "cwd": "relative"
-            }
-        ],
+        "text": "hello",
     }))
-    .expect_err("relative environment cwd should fail");
+    .expect("params should deserialize");
 
-    assert!(
-        err.to_string()
-            .contains("AbsolutePathBuf deserialized without a base path"),
-        "unexpected error: {err}"
+    assert_eq!(
+        params,
+        ThreadRealtimeAppendTextParams {
+            thread_id: "thread_123".to_string(),
+            text: "hello".to_string(),
+            role: ConversationTextRole::User,
+        }
     );
 }

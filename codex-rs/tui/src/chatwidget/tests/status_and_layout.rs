@@ -2,6 +2,7 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_app_server_protocol::SpendControlLimitSnapshot;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -410,7 +411,7 @@ async fn configured_pet_load_is_deferred_until_after_construction() {
     let mut cfg = test_config().await;
     cfg.tui_pet = Some(crate::pets::DEFAULT_PET_ID.to_string());
     crate::pets::write_test_pack(&cfg.codex_home);
-    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = get_model_offline_for_tests(cfg.model.as_deref());
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
@@ -420,6 +421,7 @@ async fn configured_pet_load_is_deferred_until_after_construction() {
         initial_user_message: None,
         enhanced_keys_supported: false,
         has_chatgpt_account: false,
+        has_codex_backend_auth: false,
         model_catalog: test_model_catalog(&cfg),
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
@@ -580,6 +582,7 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -608,6 +611,7 @@ async fn status_line_legacy_limit_items_prefer_matching_windows() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -640,6 +644,7 @@ async fn status_line_shows_secondary_non_weekly_when_primary_is_weekly() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -668,6 +673,7 @@ async fn status_line_five_hour_item_omits_weekly_only_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -696,6 +702,7 @@ async fn status_line_single_monthly_primary_omits_weekly_limit_item() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -724,6 +731,7 @@ async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() 
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -752,6 +760,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             unlimited: false,
             balance: Some("17.5".to_string()),
         }),
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -772,6 +781,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -794,6 +804,40 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
 }
 
 #[tokio::test]
+async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut usage_limits = snapshot(/*percent*/ 10.0);
+    usage_limits.individual_limit = Some(SpendControlLimitSnapshot {
+        limit: "25000".to_string(),
+        used: "8000".to_string(),
+        remaining_percent: 68,
+        resets_at: 1_800_000_000,
+    });
+    chat.on_rate_limit_snapshot(Some(usage_limits));
+
+    chat.on_rolling_rate_limit_snapshot(snapshot(/*percent*/ 20.0));
+
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    let individual_limit = display
+        .individual_limit
+        .as_ref()
+        .expect("rolling updates should preserve monthly limits");
+    assert_eq!(individual_limit.used, "8,000");
+    assert_eq!(individual_limit.limit, "25,000");
+    assert_eq!(individual_limit.percent_remaining, 68.0);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 30.0)));
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    assert!(display.individual_limit.is_none());
+}
+
+#[tokio::test]
 async fn rate_limit_snapshot_updates_and_retains_plan_type() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -811,6 +855,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Plus),
         rate_limit_reached_type: None,
     }));
@@ -830,6 +875,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(234),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -849,6 +895,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(567),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -873,6 +920,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             unlimited: false,
             balance: Some("5.00".to_string()),
         }),
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -887,6 +935,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -940,6 +989,7 @@ async fn rate_limit_switch_prompt_skips_non_codex_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -1360,33 +1410,97 @@ async fn streaming_final_answer_keeps_task_running_state() {
 #[tokio::test]
 async fn ctrl_c_interrupt_pauses_active_goal_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = start_active_goal_turn(&mut chat);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+    next_interrupt_op(&mut op_rx);
+    assert_goal_paused_event(&mut rx, thread_id);
+}
+
+#[tokio::test]
+async fn esc_interrupt_pauses_active_goal_turn() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_welcome_banner = false;
+    let thread_id = start_active_goal_turn(&mut chat);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt { .. })));
+    assert_goal_paused_event(&mut rx, thread_id);
+
+    update_thread_goal(&mut chat, thread_id, AppThreadGoalStatus::Paused);
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw goal paused footer");
+    let snapshot = normalized_backend_snapshot(terminal.backend());
+    #[cfg(target_os = "windows")]
+    insta::with_settings!({ snapshot_suffix => "windows" }, {
+        assert_chatwidget_snapshot!("esc_interrupt_goal_paused_footer", snapshot);
+    });
+    #[cfg(not(target_os = "windows"))]
+    assert_chatwidget_snapshot!("esc_interrupt_goal_paused_footer", snapshot);
+}
+
+#[tokio::test]
+async fn request_user_input_interrupt_pauses_active_goal_turn() {
+    for key_event in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let thread_id = start_active_goal_turn(&mut chat);
+        chat.handle_request_user_input_now(ToolRequestUserInputParams {
+            thread_id: thread_id.to_string(),
+            item_id: "call-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            questions: Vec::new(),
+            auto_resolution_ms: None,
+        });
+
+        chat.handle_key_event(key_event);
+
+        assert_matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt { .. })));
+        assert_goal_paused_event(&mut rx, thread_id);
+    }
+}
+
+fn start_active_goal_turn(chat: &mut ChatWidget) -> ThreadId {
     let thread_id = ThreadId::new();
     chat.set_feature_enabled(Feature::Goals, /*enabled*/ true);
     chat.thread_id = Some(thread_id);
+    update_thread_goal(chat, thread_id, AppThreadGoalStatus::Active);
+    chat.on_task_started();
+    thread_id
+}
+
+fn update_thread_goal(chat: &mut ChatWidget, thread_id: ThreadId, status: AppThreadGoalStatus) {
     let mut goal = test_thread_goal(
-        codex_app_server_protocol::ThreadGoalStatus::Active,
+        status,
         /*token_budget*/ Some(50_000),
         /*tokens_used*/ 40_000,
     );
-    goal.thread_id = thread_id.to_string();
+    let thread_id = thread_id.to_string();
+    goal.thread_id = thread_id.clone();
     chat.handle_server_notification(
         ServerNotification::ThreadGoalUpdated(
             codex_app_server_protocol::ThreadGoalUpdatedNotification {
-                thread_id: thread_id.to_string(),
+                thread_id,
                 turn_id: None,
                 goal,
             },
         ),
         /*replay_kind*/ None,
     );
-    chat.on_task_started();
+}
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-
-    match op_rx.try_recv() {
-        Ok(Op::Interrupt { .. }) => {}
-        other => panic!("expected Op::Interrupt, got {other:?}"),
-    }
+fn assert_goal_paused_event(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    thread_id: ThreadId,
+) {
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::SetThreadGoalStatus {
@@ -1814,6 +1928,7 @@ async fn status_widget_and_approval_modal_snapshot() {
         call_id: "call-approve-exec".into(),
         approval_id: Some("call-approve-exec".into()),
         turn_id: "turn-approve-exec".into(),
+        environment_id: None,
         command: vec!["echo".into(), "hello world".into()],
         cwd: test_path_buf("/tmp").abs(),
         reason: Some(
@@ -2119,6 +2234,32 @@ async fn interrupted_turn_clears_visible_running_hook() {
         "interrupted_turn_clears_visible_running_hook",
         format!(
             "before interrupt:\n{before_interrupt}after interrupt:\n{}",
+            active_hook_blob(&chat)
+        )
+    );
+}
+
+#[tokio::test]
+async fn completed_turn_clears_visible_running_hook() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_hook_started(
+        &mut chat,
+        hook_started_run(
+            "post-tool-use:0:/tmp/hooks.json",
+            codex_app_server_protocol::HookEventName::PostToolUse,
+            /*status_message*/ None,
+        ),
+    );
+    reveal_running_hooks(&mut chat);
+    let before_completion = active_hook_blob(&chat);
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+
+    assert_chatwidget_snapshot!(
+        "completed_turn_clears_visible_running_hook",
+        format!(
+            "before completion:\n{before_completion}after completion:\n{}",
             active_hook_blob(&chat)
         )
     );
@@ -3537,7 +3678,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
         AppServerThreadItem::CommandExecution {
             id: "c1".into(),
             command: codex_shell_command::parse_command::shlex_join(&command),
-            cwd: cwd.clone(),
+            cwd: cwd.clone().into(),
             process_id: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::InProgress,
@@ -3552,7 +3693,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
         AppServerThreadItem::CommandExecution {
             id: "c1".into(),
             command: codex_shell_command::parse_command::shlex_join(&command),
-            cwd,
+            cwd: cwd.into(),
             process_id: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
