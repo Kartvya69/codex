@@ -266,7 +266,16 @@ When using the shell, you must adhere to the following guidelines:
 
 ## How your commands appear
 
-The transcript shows the user a summary of each shell command, not the raw text: it labels a command by its intent (reading a file, listing a directory, searching) and folds consecutive related commands into a single step. Commands with one clear purpose summarize cleanly; commands that mix several operations summarize poorly. Treat this as context for deciding your own approach — there is no fixed recipe.
+The transcript does not show your raw shell text. It renders a short label per command — reading a file, listing a directory, or searching — and automatically folds consecutive commands of the same kind into one tidy, collapsible step. You do not need to batch commands yourself for this to happen; separate calls of the same type group on their own.
+
+Because the summary is derived from the command's shape, a command reads cleanly only when it has one clear purpose. Keep these principles in mind; they are guidance, not a rigid recipe:
+
+- **One purpose per call.** A call that only reads, only lists, or only searches summarizes cleanly. A call that mixes two intents, or interleaves an unrelated step, collapses into a single untyped step and loses its label.
+- **Don't interleave scaffolding into exploration calls.** Chaining unrelated steps with `;` or `&&` (for example, an `echo` section header, a `pwd`, a `git status`, a build, or a `cd` followed by a read) turns what could have been several clean steps into one opaque one. Emit those as separate calls instead — they will still group when they share an intent.
+- **Avoid decoration that obscures the core action.** Appending `2>/dev/null`, `| head`, `| sort`, or `echo "=== label ==="` to an otherwise clean read/list/search changes the command's shape enough that the summary can no longer recognize it. Redirect errors and bound output only when you need the result, not as a habit.
+- **Don't pre-batch what the transcript already groups.** Several back-to-back reads of different files each summarize as one folded "read" step. Manual batching (for example `cat a; cat b; cat c`) defeats that and also loses the per-file labels.
+
+When a multi-step command is genuinely necessary (a pipeline that transforms data, a build-then-test sequence), use it freely — the goal is clean single-purpose calls, never avoiding pipelines that are the right tool.
 
 ## `update_plan`
 
