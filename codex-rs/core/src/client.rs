@@ -1381,6 +1381,7 @@ impl ModelClientSession {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_chat_completions_api(
         &self,
         prompt: &Prompt,
@@ -1450,7 +1451,7 @@ impl ModelClientSession {
                     summary: if summary == ReasoningSummaryConfig::None {
                         None
                     } else {
-                        Some(summary.clone())
+                        Some(summary)
                     },
                     context: None,
                 }),
