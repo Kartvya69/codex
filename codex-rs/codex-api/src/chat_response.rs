@@ -1,14 +1,14 @@
-//! Chat Completions API response conversion to internal protocol format.
+//! Chat Completions API response types and error mapping.
 //!
-//! This module handles converting Chat Completions API responses and SSE events
-//! into the internal ResponseEvent format used by Codex.
+//! The Chat Completions wire path used by codex-api is streaming-only: the
+//! request always carries `stream: true` and the transport consumes an SSE
+//! stream. Accordingly the streaming event synthesis (chunk -> `ResponseEvent`,
+//! including the stateful tool-call item lifecycle) lives in
+//! [`crate::sse::chat`]. This module owns the wire deserialization types and the
+//! Chat-Completions error -> [`ApiError`] mapping.
 
-use crate::common::ResponseEvent;
 use crate::error::ApiError;
-use codex_protocol::protocol::TokenUsage;
 use serde::Deserialize;
-use serde_json::Value;
-use std::collections::HashMap;
 
 // ============================================================================
 // Chat Completions API Types
@@ -53,21 +53,28 @@ pub struct ChatFunctionCall {
     pub arguments: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ChatUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
 }
 
-/// Chat Completions streaming chunk
+/// Chat Completions streaming chunk.
+///
+/// When `stream_options.include_usage` is set, the final chunk (after the
+/// `finish_reason` chunk) carries an empty `choices` array and a populated
+/// [`ChatUsage`].
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChunk {
     pub id: String,
     pub object: String,
     pub created: u64,
     pub model: String,
+    #[serde(default)]
     pub choices: Vec<ChatChoiceDelta>,
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,10 +84,11 @@ pub struct ChatChoiceDelta {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ChatDelta {
     pub role: Option<String>,
     pub content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ChatToolCallDelta>>,
 }
 
@@ -92,7 +100,7 @@ pub struct ChatToolCallDelta {
     pub function: Option<ChatFunctionCallDelta>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ChatFunctionCallDelta {
     pub name: Option<String>,
     pub arguments: Option<String>,
@@ -112,115 +120,15 @@ pub struct ChatErrorDetail {
 }
 
 // ============================================================================
-// Conversion Functions
+// Error Mapping
 // ============================================================================
 
-/// Converts a Chat Completions response to internal ResponseEvent format
-pub fn convert_chat_response_to_internal(
-    response: ChatCompletionResponse,
-) -> Vec<ResponseEvent> {
-    let mut events = Vec::new();
-
-    // Emit Created event
-    events.push(ResponseEvent::Created);
-
-    // Emit text content as OutputTextDelta events
-    for choice in &response.choices {
-        if let Some(content) = &choice.message.content {
-            for chunk in content.split_bytes(100) {
-                events.push(ResponseEvent::OutputTextDelta(
-                    String::from_utf8_lossy(&chunk).to_string(),
-                ));
-            }
-        }
-    }
-
-    // Emit tool calls if present
-    for choice in &response.choices {
-        if let Some(tool_calls) = &choice.message.tool_calls {
-            for tool_call in tool_calls {
-                events.push(ResponseEvent::ToolCallInputDelta {
-                    item_id: tool_call.id.clone(),
-                    call_id: Some(tool_call.id.clone()),
-                    delta: tool_call.function.arguments.clone(),
-                });
-            }
-        }
-    }
-
-    // Emit Completed event with usage
-    let token_usage = response.usage.map(|usage| TokenUsage {
-        input_tokens: usage.prompt_tokens as i64,
-        cached_input_tokens: 0,
-        output_tokens: usage.completion_tokens as i64,
-        reasoning_output_tokens: 0,
-        total_tokens: usage.total_tokens as i64,
-    });
-
-    events.push(ResponseEvent::Completed {
-        response_id: response.id,
-        token_usage,
-        end_turn: Some(true),
-    });
-
-    events
-}
-
-/// Converts a tool call from Chat Completions response to internal format
-pub fn convert_tool_call_from_chat_response(
-    tool_call: ChatToolCall,
-) -> ResponseEvent {
-    ResponseEvent::ToolCallInputDelta {
-        item_id: tool_call.id.clone(),
-        call_id: Some(tool_call.id),
-        delta: tool_call.function.arguments,
-    }
-}
-
-/// Converts Chat Completions SSE chunk to internal ResponseEvent
-pub fn convert_chat_sse_chunk_to_event(
-    chunk: ChatCompletionChunk,
-) -> Option<ResponseEvent> {
-    // Check for [DONE] sentinel (stream termination)
-    if chunk.choices.is_empty() {
-        return None;
-    }
-
-    for choice in chunk.choices {
-        // Handle text delta
-        if let Some(content) = choice.delta.content {
-            return Some(ResponseEvent::OutputTextDelta(content));
-        }
-
-        // Handle tool call delta
-        if let Some(tool_calls) = choice.delta.tool_calls {
-            for tool_call in tool_calls {
-                if let Some(args) = tool_call.function.and_then(|f| f.arguments) {
-                    return Some(ResponseEvent::ToolCallInputDelta {
-                        item_id: format!("tool_{}", tool_call.index),
-                        call_id: tool_call.id,
-                        delta: args,
-                    });
-                }
-            }
-        }
-
-        // Handle completion
-        if let Some(finish_reason) = choice.finish_reason {
-            if finish_reason == "stop" {
-                return Some(ResponseEvent::Completed {
-                    response_id: chunk.id.clone(),
-                    token_usage: None,
-                    end_turn: Some(true),
-                });
-            }
-        }
-    }
-
-    None
-}
-
-/// Maps Chat Completions API error to internal ApiError
+/// Maps a Chat Completions API error object to an internal [`ApiError`].
+///
+/// This is invoked from the SSE loop when a stream data frame fails to parse as
+/// a [`ChatCompletionChunk`] but successfully parses as a [`ChatError`], so
+/// provider errors delivered mid-stream are surfaced instead of silently
+/// swallowed.
 pub fn map_chat_error_to_api_error(error: ChatError) -> ApiError {
     match error.error.r#type.as_str() {
         "invalid_request_error" => ApiError::Api {
@@ -248,135 +156,6 @@ pub fn map_chat_error_to_api_error(error: ChatError) -> ApiError {
 mod tests {
     use super::*;
     use http::StatusCode;
-    use serde_json::json;
-
-    #[test]
-    fn test_convert_chat_response_to_internal() {
-        let response = ChatCompletionResponse {
-            id: "chatcmpl-123".to_string(),
-            object: "chat.completion".to_string(),
-            created: 1677652288,
-            model: "gpt-5".to_string(),
-            choices: vec![ChatChoice {
-                index: 0,
-                message: ChatMessage {
-                    role: "assistant".to_string(),
-                    content: Some("Hello, world!".to_string()),
-                    tool_calls: None,
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Some(ChatUsage {
-                prompt_tokens: 10,
-                completion_tokens: 5,
-                total_tokens: 15,
-            }),
-        };
-
-        let events = convert_chat_response_to_internal(response);
-
-        assert_eq!(events.len(), 3); // Created, OutputTextDelta, Completed
-        assert!(matches!(events[0], ResponseEvent::Created));
-        assert!(matches!(events[1], ResponseEvent::OutputTextDelta(_)));
-        assert!(matches!(events[2], ResponseEvent::Completed { .. }));
-    }
-
-    #[test]
-    fn test_convert_tool_call_from_chat_response() {
-        let tool_call = ChatToolCall {
-            id: "call_abc123".to_string(),
-            r#type: Some("function".to_string()),
-            function: ChatFunctionCall {
-                name: "search".to_string(),
-                arguments: r#"{"query":"test"}"#.to_string(),
-            },
-        };
-
-        let event = convert_tool_call_from_chat_response(tool_call);
-
-        match event {
-            ResponseEvent::ToolCallInputDelta {
-                item_id,
-                call_id,
-                delta,
-            } => {
-                assert_eq!(item_id, "call_abc123");
-                assert_eq!(call_id, Some("call_abc123".to_string()));
-                assert_eq!(delta, r#"{"query":"test"}"#);
-            }
-            _ => panic!("Expected ToolCallInputDelta event"),
-        }
-    }
-
-    #[test]
-    fn test_sse_text_delta_emits_per_chunk() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-123".to_string(),
-            object: "chat.completion.chunk".to_string(),
-            created: 1677652288,
-            model: "gpt-5".to_string(),
-            choices: vec![ChatChoiceDelta {
-                index: 0,
-                delta: ChatDelta {
-                    role: None,
-                    content: Some("Hello".to_string()),
-                    tool_calls: None,
-                },
-                finish_reason: None,
-            }],
-        };
-
-        let event = convert_chat_sse_chunk_to_event(chunk);
-
-        match event {
-            Some(ResponseEvent::OutputTextDelta(text)) => {
-                assert_eq!(text, "Hello");
-            }
-            _ => panic!("Expected OutputTextDelta event"),
-        }
-    }
-
-    #[test]
-    fn test_sse_tool_call_delta_emits_buffered() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-123".to_string(),
-            object: "chat.completion.chunk".to_string(),
-            created: 1677652288,
-            model: "gpt-5".to_string(),
-            choices: vec![ChatChoiceDelta {
-                index: 0,
-                delta: ChatDelta {
-                    role: None,
-                    content: None,
-                    tool_calls: Some(vec![ChatToolCallDelta {
-                        index: 0,
-                        id: Some("call_123".to_string()),
-                        r#type: Some("function".to_string()),
-                        function: Some(ChatFunctionCallDelta {
-                            name: None,
-                            arguments: Some(r#"{"query":"test"}"#.to_string()),
-                        }),
-                    }]),
-                },
-                finish_reason: None,
-            }],
-        };
-
-        let event = convert_chat_sse_chunk_to_event(chunk);
-
-        match event {
-            Some(ResponseEvent::ToolCallInputDelta {
-                item_id,
-                call_id,
-                delta,
-            }) => {
-                assert_eq!(item_id, "tool_0");
-                assert_eq!(call_id, Some("call_123".to_string()));
-                assert_eq!(delta, r#"{"query":"test"}"#);
-            }
-            _ => panic!("Expected ToolCallInputDelta event"),
-        }
-    }
 
     #[test]
     fn test_error_response_maps_invalid_request_to_api_error() {
@@ -431,12 +210,7 @@ mod tests {
 
         let api_error = map_chat_error_to_api_error(error);
 
-        match api_error {
-            ApiError::ContextWindowExceeded => {
-                // Expected
-            }
-            _ => panic!("Expected ApiError::ContextWindowExceeded"),
-        }
+        assert!(matches!(api_error, ApiError::ContextWindowExceeded));
     }
 
     #[test]
@@ -479,19 +253,5 @@ mod tests {
             }
             _ => panic!("Expected ApiError::Api with INTERNAL_SERVER_ERROR status"),
         }
-    }
-}
-
-// Helper trait for splitting content into chunks
-trait SplitChunks {
-    fn split_bytes(&self, chunk_size: usize) -> Vec<Vec<u8>>;
-}
-
-impl SplitChunks for String {
-    fn split_bytes(&self, chunk_size: usize) -> Vec<Vec<u8>> {
-        self.as_bytes()
-            .chunks(chunk_size)
-            .map(|chunk| chunk.to_vec())
-            .collect()
     }
 }

@@ -76,7 +76,10 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "chat" => Ok(Self::Chat),
             "responses" => Ok(Self::Responses),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["chat", "responses"])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["chat", "responses"],
+            )),
         }
     }
 }

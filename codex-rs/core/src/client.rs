@@ -1374,7 +1374,7 @@ impl ModelClientSession {
             let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
                 session_telemetry,
                 request_auth_context,
-                RequestRouteTelemetry::for_endpoint("chat/completions"),
+                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
                 self.client.state.auth_env_telemetry.clone(),
             );
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
@@ -1393,11 +1393,17 @@ impl ModelClientSession {
             };
 
             // Build Chat Completions request using conversion layer
+            let tools_json = create_tools_json_for_responses_api(&prompt.tools).map_err(|e| {
+                CodexErr::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to encode tools for Chat Completions request: {e}"),
+                ))
+            })?;
             let chat_request = codex_api::to_chat_completions_request(
                 &model_info.slug,
                 &prompt.get_formatted_input(),
                 &prompt.base_instructions.text,
-                &create_tools_json_for_responses_api(&prompt.tools).unwrap_or_default(),
+                &tools_json,
                 "auto",
                 prompt.parallel_tool_calls,
                 effort.map(|e| codex_api::Reasoning {
@@ -1409,7 +1415,8 @@ impl ModelClientSession {
                     },
                 }),
                 service_tier.as_deref(),
-                Some(&self.client.prompt_cache_key()),
+                // No explicit output-token budget is currently derived for the
+                // Chat Completions path; the provider default applies.
                 None,
             );
 
@@ -1430,9 +1437,7 @@ impl ModelClientSession {
                 ))
             })?;
 
-            let stream_result = client
-                .stream_request(body, options)
-                .await;
+            let stream_result = client.stream_request(body, options).await;
 
             match stream_result {
                 Ok(stream) => {

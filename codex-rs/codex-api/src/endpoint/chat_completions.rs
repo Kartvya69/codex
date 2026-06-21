@@ -1,8 +1,4 @@
 use crate::auth::SharedAuthProvider;
-use crate::chat_request::ChatCompletionRequest;
-use crate::chat_response::convert_chat_sse_chunk_to_event;
-use crate::chat_response::ChatCompletionChunk;
-use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
@@ -13,9 +9,6 @@ use crate::telemetry::SseTelemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
-use eventsource_stream::Event;
-use eventsource_stream::EventStreamError;
-use futures::StreamExt;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
@@ -76,30 +69,30 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
         let ChatCompletionsOptions {
             session_id,
             thread_id,
-            session_source,
             extra_headers,
             compression,
             turn_state,
+            ..
         } = options;
 
         let mut headers = extra_headers;
         // Chat Completions doesn't use x-client-request-id, but we can add it for consistency
-        if let Some(ref thread_id) = thread_id {
-            if let Ok(val) = HeaderValue::from_str(thread_id) {
-                headers.insert("x-client-request-id", val);
-            }
+        if let Some(ref thread_id) = thread_id
+            && let Ok(val) = HeaderValue::from_str(thread_id)
+        {
+            headers.insert("x-client-request-id", val);
         }
 
         // Add session headers
-        if let Some(sid) = session_id {
-            if let Ok(val) = HeaderValue::from_str(&sid) {
-                headers.insert("session-id", val);
-            }
+        if let Some(sid) = session_id
+            && let Ok(val) = HeaderValue::from_str(&sid)
+        {
+            headers.insert("session-id", val);
         }
-        if let Some(tid) = thread_id {
-            if let Ok(val) = HeaderValue::from_str(&tid) {
-                headers.insert("thread-id", val);
-            }
+        if let Some(tid) = thread_id
+            && let Ok(val) = HeaderValue::from_str(&tid)
+        {
+            headers.insert("thread-id", val);
         }
 
         self.stream(request, headers, compression, turn_state).await
