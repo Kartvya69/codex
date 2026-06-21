@@ -1389,7 +1389,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        turn_metadata_header: Option<&str>,
+        responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
@@ -1413,7 +1413,11 @@ impl ModelClientSession {
             );
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
             let responses_options = self
-                .build_responses_options(turn_metadata_header, compression)
+                .build_responses_options(
+                    responses_metadata,
+                    compression,
+                    model_info.use_responses_lite,
+                )
                 .await;
 
             // Convert ResponsesOptions to ChatCompletionsOptions
@@ -1435,18 +1439,20 @@ impl ModelClientSession {
             })?;
             let chat_request = codex_api::to_chat_completions_request(
                 &model_info.slug,
-                &prompt.get_formatted_input(),
+                &prompt.get_formatted_input_for_request(model_info.use_responses_lite),
                 &prompt.base_instructions.text,
                 &tools_json,
                 "auto",
                 prompt.parallel_tool_calls,
-                effort.map(|e| codex_api::Reasoning {
-                    effort: Some(e),
+                // Borrow effort/summary so the retry loop can reuse them.
+                effort.as_ref().map(|e| codex_api::Reasoning {
+                    effort: Some(e.clone()),
                     summary: if summary == ReasoningSummaryConfig::None {
                         None
                     } else {
-                        Some(summary)
+                        Some(summary.clone())
                     },
+                    context: None,
                 }),
                 service_tier.as_deref(),
                 // No explicit output-token budget is currently derived for the
@@ -1795,7 +1801,7 @@ impl ModelClientSession {
                     effort,
                     summary,
                     service_tier,
-                    turn_metadata_header,
+                    responses_metadata,
                     inference_trace,
                 )
                 .await

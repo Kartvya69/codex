@@ -640,16 +640,14 @@ fn chat_wire_api_skips_websocket_prewarm() {
     let thread_id = ThreadId::new();
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        thread_id.into(),
         thread_id,
-        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider,
         SessionSource::Cli,
-        /*parent_thread_id*/ None,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
 
@@ -664,16 +662,14 @@ fn compaction_with_chat_returns_error() {
     let thread_id = ThreadId::new();
     let client = ModelClient::new(
         /*auth_manager*/ None,
-        thread_id.into(),
         thread_id,
-        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider,
         SessionSource::Cli,
-        /*parent_thread_id*/ None,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
 

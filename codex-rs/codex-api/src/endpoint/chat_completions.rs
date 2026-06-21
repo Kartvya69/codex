@@ -6,6 +6,7 @@ use crate::provider::Provider;
 use crate::requests::Compression;
 use crate::sse::spawn_chat_completions_stream;
 use crate::telemetry::SseTelemetry;
+use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
@@ -125,9 +126,13 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
             Compression::Zstd => RequestCompression::Zstd,
         };
 
+        let body = EncodedJsonBody::encode(&body).map_err(|e| {
+            ApiError::Stream(format!("failed to encode Chat Completions request: {e}"))
+        })?;
+
         let stream_response = self
             .session
-            .stream_with(
+            .stream_encoded_json_with(
                 Method::POST,
                 Self::path(),
                 extra_headers,

@@ -233,6 +233,7 @@ fn chunk_to_events(
                     role: "assistant".to_string(),
                     content: Vec::new(),
                     phase: None,
+                    metadata: None,
                 }));
                 *message_announced = true;
             }
@@ -274,6 +275,7 @@ fn chunk_to_events(
                             namespace: None,
                             arguments: String::new(),
                             call_id: call_id.clone(),
+                            metadata: None,
                         },
                     ));
                     accum.announced = true;
@@ -307,6 +309,7 @@ fn chunk_to_events(
                             namespace: None,
                             arguments: accum.arguments.clone(),
                             call_id,
+                            metadata: None,
                         },
                     ));
                     accum.finalized = true;
@@ -353,6 +356,7 @@ fn build_terminal_events(
                 text: std::mem::take(text_accum),
             }],
             phase: None,
+            metadata: None,
         }));
     }
 
@@ -366,6 +370,7 @@ fn build_terminal_events(
                     namespace: None,
                     arguments: accum.arguments.clone(),
                     call_id,
+                    metadata: None,
                 },
             ));
             accum.finalized = true;
