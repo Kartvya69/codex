@@ -25,6 +25,14 @@ pub use login::run_logout;
 // because each host backend has a slightly different option surface.
 #[derive(Debug, Parser)]
 pub struct SeatbeltCommand {
+    /// JSON value of the `codex/sandbox-state-meta` payload to apply directly.
+    #[arg(
+        long = "sandbox-state-json",
+        value_name = "JSON",
+        conflicts_with_all = ["permissions_profile", "cwd", "include_managed_config"]
+    )]
+    pub sandbox_state_json: Option<String>,
+
     /// Named permissions profile to apply from the active configuration stack.
     #[arg(long = "permissions-profile", short = 'P', value_name = "NAME")]
     pub permissions_profile: Option<String>,
@@ -73,6 +81,14 @@ fn parse_allow_unix_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
 
 #[derive(Debug, Parser)]
 pub struct LandlockCommand {
+    /// JSON value of the `codex/sandbox-state-meta` payload to apply directly.
+    #[arg(
+        long = "sandbox-state-json",
+        value_name = "JSON",
+        conflicts_with_all = ["permissions_profile", "cwd", "include_managed_config"]
+    )]
+    pub sandbox_state_json: Option<String>,
+
     /// Named permissions profile to apply from the active configuration stack.
     #[arg(long = "permissions-profile", short = 'P', value_name = "NAME")]
     pub permissions_profile: Option<String>,
@@ -108,6 +124,14 @@ pub struct LandlockCommand {
 
 #[derive(Debug, Parser)]
 pub struct WindowsCommand {
+    /// JSON value of the `codex/sandbox-state-meta` payload to apply directly.
+    #[arg(
+        long = "sandbox-state-json",
+        value_name = "JSON",
+        conflicts_with_all = ["permissions_profile", "cwd", "include_managed_config"]
+    )]
+    pub sandbox_state_json: Option<String>,
+
     /// Named permissions profile to apply from the active configuration stack.
     #[arg(long = "permissions-profile", short = 'P', value_name = "NAME")]
     pub permissions_profile: Option<String>,

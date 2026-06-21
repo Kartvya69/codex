@@ -6,6 +6,7 @@ mod seatbelt;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use anyhow::Context;
 use codex_config::LoaderOverrides;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -15,7 +16,9 @@ use codex_core::exec_env::create_env;
 #[cfg(target_os = "macos")]
 use codex_core::spawn::CODEX_SANDBOX_ENV_VAR;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_mcp::SandboxState;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_sandboxing::landlock::allow_network_for_proxy;
 use codex_sandboxing::landlock::create_linux_sandbox_command_args_for_permission_profile;
@@ -45,6 +48,7 @@ pub async fn run_command_under_seatbelt(
     loader_overrides: LoaderOverrides,
 ) -> anyhow::Result<()> {
     let SeatbeltCommand {
+        sandbox_state_json,
         permissions_profile,
         config_profile: _,
         cwd,
@@ -65,6 +69,7 @@ pub async fn run_command_under_seatbelt(
             managed_requirements_mode,
             loader_overrides,
         },
+        sandbox_state_json,
         command,
         config_overrides,
         codex_linux_sandbox_exe,
@@ -90,6 +95,7 @@ pub async fn run_command_under_landlock(
     loader_overrides: LoaderOverrides,
 ) -> anyhow::Result<()> {
     let LandlockCommand {
+        sandbox_state_json,
         permissions_profile,
         config_profile: _,
         cwd,
@@ -108,6 +114,7 @@ pub async fn run_command_under_landlock(
             managed_requirements_mode,
             loader_overrides,
         },
+        sandbox_state_json,
         command,
         config_overrides,
         codex_linux_sandbox_exe,
@@ -124,6 +131,7 @@ pub async fn run_command_under_windows_sandbox(
     loader_overrides: LoaderOverrides,
 ) -> anyhow::Result<()> {
     let WindowsCommand {
+        sandbox_state_json,
         permissions_profile,
         config_profile: _,
         cwd,
@@ -142,6 +150,7 @@ pub async fn run_command_under_windows_sandbox(
             managed_requirements_mode,
             loader_overrides,
         },
+        sandbox_state_json,
         command,
         config_overrides,
         codex_linux_sandbox_exe,
@@ -173,6 +182,32 @@ enum ManagedRequirementsMode {
     Ignore,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct DirectSandboxState {
+    permission_profile: PermissionProfile,
+    codex_linux_sandbox_exe: Option<PathBuf>,
+    cwd: AbsolutePathBuf,
+    use_legacy_landlock: bool,
+}
+
+impl TryFrom<SandboxState> for DirectSandboxState {
+    type Error = anyhow::Error;
+
+    fn try_from(state: SandboxState) -> Result<Self, Self::Error> {
+        Ok(Self {
+            permission_profile: state
+                .permission_profile
+                .context("sandbox state is missing permissionProfile")?,
+            codex_linux_sandbox_exe: state.codex_linux_sandbox_exe,
+            cwd: state
+                .sandbox_cwd
+                .to_abs_path()
+                .context("sandboxCwd is not a native absolute path")?,
+            use_legacy_landlock: state.use_legacy_landlock,
+        })
+    }
+}
+
 impl ManagedRequirementsMode {
     fn for_profile_invocation(
         permissions_profile: &Option<String>,
@@ -188,6 +223,7 @@ impl ManagedRequirementsMode {
 
 async fn run_command_under_sandbox(
     config_options: DebugSandboxConfigOptions,
+    sandbox_state_json: Option<String>,
     command: Vec<String>,
     config_overrides: CliConfigOverrides,
     codex_linux_sandbox_exe: Option<PathBuf>,
@@ -196,6 +232,14 @@ async fn run_command_under_sandbox(
     #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     allow_unix_sockets: &[AbsolutePathBuf],
 ) -> anyhow::Result<()> {
+    let direct_sandbox_state = sandbox_state_json
+        .as_deref()
+        .map(serde_json::from_str::<SandboxState>)
+        .transpose()
+        .context("invalid --sandbox-state-json value")?
+        .map(DirectSandboxState::try_from)
+        .transpose()?;
+    let uses_direct_sandbox_state = direct_sandbox_state.is_some();
     let config = load_debug_sandbox_config(
         config_overrides
             .parse_overrides()
@@ -206,15 +250,33 @@ async fn run_command_under_sandbox(
     )
     .await?;
 
-    // In practice, this should be `std::env::current_dir()` because this CLI
-    // does not support `--cwd`, but let's use the config value for consistency.
-    let cwd = config.cwd.clone();
+    let (permission_profile, codex_linux_sandbox_exe, cwd, use_legacy_landlock) =
+        match direct_sandbox_state {
+            Some(state) => (
+                state.permission_profile,
+                state.codex_linux_sandbox_exe,
+                state.cwd,
+                state.use_legacy_landlock,
+            ),
+            None => (
+                config.permissions.effective_permission_profile(),
+                config.codex_linux_sandbox_exe.clone(),
+                config.cwd.clone(),
+                config.features.use_legacy_landlock(),
+            ),
+        };
     // Non-Windows sandbox launchers still use `sandbox_policy_cwd` for any
-    // remaining cwd-dependent policy resolution. `:workspace_roots` entries in
-    // the effective profile have already been materialized from config roots.
+    // remaining cwd-dependent policy resolution. Direct sandbox states and
+    // config-derived profiles have already materialized `:workspace_roots`.
     let sandbox_policy_cwd = cwd.clone();
     #[cfg(target_os = "windows")]
-    let workspace_roots = config.effective_workspace_roots();
+    // Direct profiles already contain concrete workspace paths, so do not
+    // rebind them to roots from this process's ambient configuration.
+    let workspace_roots = if uses_direct_sandbox_state {
+        Vec::new()
+    } else {
+        config.effective_workspace_roots()
+    };
 
     let env = create_env(
         &config.permissions.shell_environment_policy,
@@ -225,7 +287,15 @@ async fn run_command_under_sandbox(
     if let SandboxType::Windows = sandbox_type {
         #[cfg(target_os = "windows")]
         {
-            run_command_under_windows_session(&config, command, cwd, workspace_roots, env).await;
+            run_command_under_windows_session(
+                &config,
+                permission_profile,
+                command,
+                cwd,
+                workspace_roots,
+                env,
+            )
+            .await;
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -239,12 +309,17 @@ async fn run_command_under_sandbox(
     let _ = log_denials;
 
     let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
+    let proxy_permission_profile = if uses_direct_sandbox_state {
+        &permission_profile
+    } else {
+        config.permissions.permission_profile()
+    };
 
     // This proxy should only live for the lifetime of the child process.
     let network_proxy = match config.permissions.network.as_ref() {
         Some(spec) => Some(
             spec.start_proxy(
-                config.permissions.permission_profile(),
+                proxy_permission_profile,
                 /*policy_decider*/ None,
                 /*blocked_request_observer*/ None,
                 managed_network_requirements_enabled,
@@ -266,7 +341,7 @@ async fn run_command_under_sandbox(
         None => None,
     };
     let runtime_permission_profile = with_managed_mitm_ca_readable_root(
-        config.permissions.effective_permission_profile(),
+        permission_profile,
         managed_mitm_ca_trust_bundle_path.as_ref(),
         sandbox_policy_cwd.as_path(),
     );
@@ -304,11 +379,8 @@ async fn run_command_under_sandbox(
             .await?
         }
         SandboxType::Landlock => {
-            #[expect(clippy::expect_used)]
-            let codex_linux_sandbox_exe = config
-                .codex_linux_sandbox_exe
-                .expect("codex-linux-sandbox executable not found");
-            let use_legacy_landlock = config.features.use_legacy_landlock();
+            let codex_linux_sandbox_exe =
+                codex_linux_sandbox_exe.context("codex-linux-sandbox executable not found")?;
             let network_sandbox_policy = runtime_permission_profile.network_sandbox_policy();
             let args = create_linux_sandbox_command_args_for_permission_profile(
                 command,
@@ -364,6 +436,7 @@ async fn run_command_under_sandbox(
 #[cfg(target_os = "windows")]
 async fn run_command_under_windows_session(
     config: &Config,
+    permission_profile: PermissionProfile,
     command: Vec<String>,
     cwd: AbsolutePathBuf,
     workspace_roots: Vec<AbsolutePathBuf>,
@@ -374,7 +447,6 @@ async fn run_command_under_windows_session(
     use codex_windows_sandbox::WindowsSandboxSessionRequest;
     use codex_windows_sandbox::spawn_windows_sandbox_session_for_level;
 
-    let permission_profile = config.permissions.effective_permission_profile();
     let empty_paths: &[AbsolutePathBuf] = &[];
     let spawned = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
         permission_profile: &permission_profile,
@@ -613,6 +685,48 @@ mod tests {
             escape_toml_path(private),
         );
         std::fs::write(config_path, config)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_sandbox_state_uses_wire_payload_values() -> anyhow::Result<()> {
+        let cwd = TempDir::new()?;
+        let cwd = AbsolutePathBuf::from_absolute_path(cwd.path())?;
+        let state = serde_json::from_value::<SandboxState>(serde_json::json!({
+            "permissionProfile": { "type": "disabled" },
+            "codexLinuxSandboxExe": "/opt/codex/codex-linux-sandbox",
+            "sandboxCwd": format!("file://{}", cwd.display()),
+            "useLegacyLandlock": true,
+        }))?;
+
+        assert_eq!(
+            DirectSandboxState::try_from(state)?,
+            DirectSandboxState {
+                permission_profile: PermissionProfile::Disabled,
+                codex_linux_sandbox_exe: Some(PathBuf::from("/opt/codex/codex-linux-sandbox")),
+                cwd,
+                use_legacy_landlock: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_sandbox_state_requires_permission_profile() -> anyhow::Result<()> {
+        let cwd = TempDir::new()?;
+        let state = serde_json::from_value::<SandboxState>(serde_json::json!({
+            "codexLinuxSandboxExe": null,
+            "sandboxCwd": format!("file://{}", cwd.path().display()),
+            "useLegacyLandlock": false,
+        }))?;
+
+        let err = DirectSandboxState::try_from(state).expect_err("profile should be required");
+        assert_eq!(
+            err.to_string(),
+            "sandbox state is missing permissionProfile"
+        );
         Ok(())
     }
 

@@ -2982,6 +2982,49 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     #[test]
+    fn sandbox_parses_direct_sandbox_state() {
+        let sandbox_state_json = r#"{"permissionProfile":{"type":"disabled"},"codexLinuxSandboxExe":null,"sandboxCwd":"file:///workspace","useLegacyLandlock":false}"#;
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "sandbox",
+            "--sandbox-state-json",
+            sandbox_state_json,
+            "--",
+            "echo",
+        ])
+        .expect("parse");
+
+        let Some(Subcommand::Sandbox(command)) = cli.subcommand else {
+            panic!("expected sandbox command");
+        };
+
+        assert_eq!(
+            command.sandbox_state_json.as_deref(),
+            Some(sandbox_state_json)
+        );
+        assert_eq!(command.command, vec!["echo"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn sandbox_rejects_direct_state_with_permissions_profile() {
+        let err = MultitoolCli::try_parse_from([
+            "codex",
+            "sandbox",
+            "--sandbox-state-json",
+            "{}",
+            "--permissions-profile",
+            ":workspace",
+            "--",
+            "echo",
+        ])
+        .expect_err("parse should fail");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
     fn sandbox_parses_permissions_profile_short_alias() {
         let cli =
             MultitoolCli::try_parse_from(["codex", "sandbox", "-P", ":workspace", "--", "echo"])
