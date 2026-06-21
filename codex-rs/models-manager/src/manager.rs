@@ -2,6 +2,7 @@ use super::cache::ModelsCacheManager;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
 use crate::model_info;
+use crate::models_dev;
 use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_protocol::config_types::CollaborationModeMask;
@@ -201,6 +202,11 @@ pub struct OpenAiModelsManager {
     cache_manager: ModelsCacheManager,
     endpoint_client: SharedModelsEndpointClient,
     auth_manager: Option<Arc<AuthManager>>,
+    /// Codex home directory, used to persist models.dev enrichment lookups.
+    codex_home: PathBuf,
+    /// Resolves the public models.dev catalog for unknown-model enrichment.
+    /// Injectable so tests can avoid network access.
+    models_dev_resolver: Arc<dyn models_dev::ModelsDevResolver>,
 }
 
 /// Static model manager backed by an authoritative in-process catalog.
@@ -226,7 +232,20 @@ impl OpenAiModelsManager {
             cache_manager,
             endpoint_client,
             auth_manager,
+            codex_home,
+            models_dev_resolver: Arc::new(models_dev::HttpModelsDevResolver),
         }
+    }
+
+    /// Replace the models.dev resolver. Test seam to keep `get_model_info`
+    /// offline and deterministic.
+    #[cfg(test)]
+    pub(crate) fn with_models_dev_resolver(
+        mut self,
+        resolver: Arc<dyn models_dev::ModelsDevResolver>,
+    ) -> Self {
+        self.models_dev_resolver = resolver;
+        self
     }
 }
 
@@ -261,6 +280,30 @@ impl ModelsManager for OpenAiModelsManager {
 
     fn auth_manager(&self) -> Option<&AuthManager> {
         self.auth_manager.as_deref()
+    }
+
+    fn get_model_info<'a>(
+        &'a self,
+        model: &'a str,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, ModelInfo> {
+        Box::pin(
+            async move {
+                let remote_models = self.get_remote_models().await;
+                let model_info = construct_model_info_from_candidates(model, &remote_models, config);
+                // When the slug resolved to the hardcoded fallback, try to
+                // recover authoritative metadata from the public models.dev
+                // catalog before returning. On any miss the original fallback
+                // is preserved unchanged.
+                if model_info.used_fallback_model_metadata {
+                    models_dev::enrich(&self.codex_home, model_info, self.models_dev_resolver.as_ref())
+                        .await
+                } else {
+                    model_info
+                }
+            }
+            .instrument(tracing::info_span!("get_model_info", model = model)),
+        )
     }
 
     fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {

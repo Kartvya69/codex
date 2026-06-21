@@ -193,7 +193,9 @@ fn openai_manager_for_tests_with_auth(
     endpoint_client: Arc<dyn ModelsEndpointClient>,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> OpenAiModelsManager {
+    // Use the noop models.dev resolver so manager tests never touch the network.
     OpenAiModelsManager::new(codex_home, endpoint_client, auth_manager)
+        .with_models_dev_resolver(Arc::new(crate::models_dev::NoopModelsDevResolver))
 }
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
