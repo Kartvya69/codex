@@ -109,6 +109,55 @@ pub enum Stop {
 // Conversion Functions
 // ============================================================================
 
+/// Flatten Responses-API tool specs into the flat `function` definitions that
+/// Chat Completions requires. Namespace containers (MCP servers and other
+/// multi-tool sources) are expanded into individual functions named
+/// `<namespace><tool>` (e.g. `mcp__context7__resolve-library-id`) so the model
+/// can call each tool and the registry can route the flat name back to the
+/// handler. Non-namespace tools pass through unchanged.
+fn flatten_tools_for_chat(tools: &[Value]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if tool.get("type").and_then(|v| v.as_str()) == Some("namespace") {
+            let namespace = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(nested) = tool.get("tools").and_then(|v| v.as_array()) {
+                for n in nested {
+                    if let Some(flat) = flatten_namespaced_function(n, namespace) {
+                        out.push(flat);
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(tool.clone());
+    }
+    out
+}
+
+/// Build a flat function definition from a single nested tool inside a
+/// namespace container. Returns `None` for non-function entries.
+fn flatten_namespaced_function(nested: &Value, namespace: &str) -> Option<Value> {
+    if nested.get("type").and_then(|v| v.as_str()) != Some("function") {
+        return None;
+    }
+    let name = nested.get("name")?.as_str()?;
+    let flat_name = format!("{namespace}{name}");
+    let description = nested
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let parameters = nested
+        .get("parameters")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Some(json!({
+        "type": "function",
+        "name": flat_name,
+        "description": description,
+        "parameters": parameters,
+    }))
+}
+
 /// Convert internal protocol request to Chat Completions API request.
 ///
 /// `reasoning.summary` has no Chat Completions equivalent (it is a Responses-API
@@ -214,8 +263,15 @@ pub fn to_chat_completions_request(
         }
     }
 
-    // Convert tools
-    let chat_tools: Vec<ChatTool> = tools.iter().map(tool_to_function_definition).collect();
+    // Convert tools. Namespace containers (MCP servers and other multi-tool
+    // sources) must be flattened first: Chat Completions only supports flat
+    // `function` definitions, so each nested tool becomes its own function
+    // named `<namespace><tool>` (e.g. `mcp__context7__resolve-library-id`). The
+    // registry resolves that flat name back to the handler.
+    let chat_tools: Vec<ChatTool> = flatten_tools_for_chat(tools)
+        .iter()
+        .map(tool_to_function_definition)
+        .collect();
 
     ChatCompletionRequest {
         model: model.to_string(),
@@ -756,5 +812,46 @@ mod tests {
         // Namespace is prefixed into the description; name is unmodified.
         assert_eq!(tool.function.name, "read_file");
         assert_eq!(tool.function.description, "[fs] Read a file");
+    }
+
+    #[test]
+    fn flatten_namespace_tools_into_flat_functions() {
+        // A namespace container (as produced for an MCP server) must expand into
+        // individual flat functions named `<namespace><tool>` for Chat Completions.
+        let namespace = json!({
+            "type": "namespace",
+            "name": "mcp__demo__",
+            "description": "Demo tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "lookup_order",
+                    "description": "Look up an order",
+                    "parameters": {"type": "object"}
+                },
+                {
+                    "type": "function",
+                    "name": "cancel_order",
+                    "description": "Cancel an order",
+                    "parameters": {"type": "object"}
+                }
+            ]
+        });
+        let flat = json!({
+            "type": "function",
+            "name": "exec_command",
+            "description": "Run a command",
+            "parameters": {"type": "object"}
+        });
+
+        let out = flatten_tools_for_chat(&[namespace, flat]);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["name"].as_str(), Some("mcp__demo__lookup_order"));
+        assert_eq!(out[1]["name"].as_str(), Some("mcp__demo__cancel_order"));
+        assert_eq!(out[2]["name"].as_str(), Some("exec_command"));
+
+        // Each flattened entry must round-trip through tool_to_function_definition.
+        let chat_tool = tool_to_function_definition(&out[0]);
+        assert_eq!(chat_tool.function.name, "mcp__demo__lookup_order");
     }
 }
