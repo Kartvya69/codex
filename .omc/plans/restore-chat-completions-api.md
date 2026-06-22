@@ -312,7 +312,12 @@ The following ResponseItem types CANNOT convert from Chat Completions:
 - `ToolSearchCall` - no Chat equivalent
 - `WebSearchCall` - no Chat equivalent
 - `ImageGenerationCall` - no Chat equivalent
-- `Compaction` - no Chat equivalent
+
+> Note: `Compaction` is intentionally absent here — it is a client-side
+> conversation-history management concern, not a `ResponseItem` variant that
+> arrives in a Chat Completions response. Its incompatibility with the Chat wire
+> API is handled at config time (Phase 3 validation), not during response
+> conversion.
 
 **Pre-Implementation Tests:**
 ```rust

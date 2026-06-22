@@ -295,12 +295,20 @@ impl ModelsManager for OpenAiModelsManager {
                 // recover authoritative metadata from the public models.dev
                 // catalog before returning. On any miss the original fallback
                 // is preserved unchanged.
-                if model_info.used_fallback_model_metadata {
+                let model_info = if model_info.used_fallback_model_metadata {
                     models_dev::enrich(&self.codex_home, model_info, self.models_dev_resolver.as_ref())
                         .await
                 } else {
                     model_info
-                }
+                };
+                // Re-apply user config overrides last so an explicit
+                // `model_context_window` (and any other override) wins over the
+                // models.dev catalog metadata. Priority: user config >
+                // models.dev > hardcoded fallback. `enrich` runs after
+                // `construct_model_info_from_candidates` already applied these
+                // overrides, so without re-applying it would clobber a
+                // user-supplied context window with the catalog's value.
+                model_info::with_config_overrides(model_info, config)
             }
             .instrument(tracing::info_span!("get_model_info", model = model)),
         )

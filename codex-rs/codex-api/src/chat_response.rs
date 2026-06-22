@@ -131,10 +131,20 @@ pub struct ChatErrorDetail {
 /// swallowed.
 pub fn map_chat_error_to_api_error(error: ChatError) -> ApiError {
     match error.error.r#type.as_str() {
-        "invalid_request_error" => ApiError::Api {
-            status: http::StatusCode::BAD_REQUEST,
-            message: error.error.message,
-        },
+        "invalid_request_error" => {
+            // OpenAI-compatible providers surface context-window overflows as
+            // `type: "invalid_request_error"` with `code: "context_length_exceeded"`.
+            // Inspect `code` here; matching the type string would never fire and
+            // the error would be misclassified as a generic BAD_REQUEST.
+            if error.error.code.as_deref() == Some("context_length_exceeded") {
+                ApiError::ContextWindowExceeded
+            } else {
+                ApiError::Api {
+                    status: http::StatusCode::BAD_REQUEST,
+                    message: error.error.message,
+                }
+            }
+        }
         "authentication_error" => ApiError::Api {
             status: http::StatusCode::UNAUTHORIZED,
             message: error.error.message,
@@ -205,6 +215,25 @@ mod tests {
                 message: "Context length exceeded".to_string(),
                 r#type: "context_length_exceeded".to_string(),
                 code: None,
+            },
+        };
+
+        let api_error = map_chat_error_to_api_error(error);
+
+        assert!(matches!(api_error, ApiError::ContextWindowExceeded));
+    }
+
+    #[test]
+    fn test_context_length_exceeded_as_code_maps_correctly() {
+        // OpenAI-compatible providers send context-window overflow as
+        // `type: "invalid_request_error"` + `code: "context_length_exceeded"`;
+        // this must still map to ContextWindowExceeded, not a generic BAD_REQUEST.
+        let error = ChatError {
+            error: ChatErrorDetail {
+                message: "This model's maximum context length is 8192 tokens."
+                    .to_string(),
+                r#type: "invalid_request_error".to_string(),
+                code: Some("context_length_exceeded".to_string()),
             },
         };
 

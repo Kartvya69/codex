@@ -283,7 +283,7 @@ pub fn to_chat_completions_request(
         } else {
             None
         },
-        parallel_tool_calls: parallel_tool_calls.then_some(true),
+        parallel_tool_calls: Some(parallel_tool_calls),
         max_tokens: None,
         max_completion_tokens,
         temperature: None,
@@ -566,7 +566,10 @@ mod tests {
             None,
         );
 
-        assert!(request.parallel_tool_calls.is_none());
+        // `false` must be forwarded as Some(false) so the provider actually
+        // disables parallel tool calls; the old `then_some(true)` collapsed it
+        // to None, which providers treat as the default (enabled).
+        assert_eq!(request.parallel_tool_calls, Some(false));
     }
 
     #[test]

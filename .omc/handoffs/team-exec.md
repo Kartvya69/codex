@@ -12,7 +12,7 @@
 - **Files Modified**:
   - codex-rs/model-provider-info/src/lib.rs — WireApi::Chat, default_wire_api(), supports_wire_api(), validation
   - codex-rs/model-provider-info/src/model_provider_info_tests.rs — 8 new tests
-  - codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs — Chat = 1 proto variant
+  - codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs — `Chat` proto variant added (enum now `Unspecified=0, Chat=1, Responses=2`)
   - codex-rs/config/src/thread_config/remote.rs — Proto conversion
   - codex-rs/core/src/client.rs — WireApi::Chat routing, stream_chat_completions_api(), compaction check, Chat endpoint constant
   - codex-rs/core/src/client_tests.rs — 2 new tests
