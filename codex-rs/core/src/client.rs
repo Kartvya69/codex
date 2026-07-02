@@ -1490,6 +1490,7 @@ impl ModelClientSession {
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
+                client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
             );
             let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
@@ -1532,19 +1533,35 @@ impl ModelClientSession {
                 "auto",
                 prompt.parallel_tool_calls,
                 // Borrow effort/summary so the retry loop can reuse them.
-                effort.as_ref().map(|e| codex_api::Reasoning {
-                    effort: Some(e.clone()),
-                    summary: if summary == ReasoningSummaryConfig::None {
-                        None
-                    } else {
-                        Some(summary)
-                    },
-                    context: None,
-                }),
+                // Normalize Ultra -> Max exactly like the Responses path
+                // (see `reasoning_effort_for_request`) so the wire value the
+                // provider receives matches the Responses wire API.
+                effort
+                    .as_ref()
+                    .map(|e| reasoning_effort_for_request(e.clone()))
+                    .map(|e| codex_api::Reasoning {
+                        effort: Some(e),
+                        summary: if summary == ReasoningSummaryConfig::None {
+                            None
+                        } else {
+                            Some(summary)
+                        },
+                        context: None,
+                    }),
                 service_tier.as_deref(),
                 // No explicit output-token budget is currently derived for the
                 // Chat Completions path; the provider default applies.
                 None,
+            );
+
+            // Enrich per-request telemetry with service tier + reasoning effort
+            // for OTEL, mirroring `session_telemetry_for_request` on the Responses
+            // path. `build_streaming_telemetry` still gets the base session
+            // telemetry (as on the Responses path); only the stream consumer
+            // observes the per-request view.
+            let request_session_telemetry = session_telemetry.clone().with_inference_request(
+                service_tier.as_deref(),
+                chat_request.reasoning_effort.as_ref(),
             );
 
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1570,8 +1587,9 @@ impl ModelClientSession {
                 Ok(stream) => {
                     let (stream, _) = map_response_stream(
                         stream,
-                        session_telemetry.clone(),
+                        request_session_telemetry,
                         inference_trace_attempt,
+                        Arc::clone(&self.client.state.provider),
                     );
                     return Ok(stream);
                 }
@@ -1590,6 +1608,7 @@ impl ModelClientSession {
                             unauthorized_transport,
                             &mut auth_recovery,
                             session_telemetry,
+                            &self.client.state.provider,
                         )
                         .await?,
                     );
@@ -1598,7 +1617,7 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
-                    let err = map_api_error(err);
+                    let err = self.client.state.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),

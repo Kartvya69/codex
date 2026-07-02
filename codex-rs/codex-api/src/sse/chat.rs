@@ -233,7 +233,7 @@ fn chunk_to_events(
                     role: "assistant".to_string(),
                     content: Vec::new(),
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 }));
                 *message_announced = true;
             }
@@ -268,16 +268,14 @@ fn chunk_to_events(
                 // that to `ToolPayload::Function`, which both built-in tools
                 // (exec_command/apply_patch) and MCP tools expect.
                 if !accum.announced && (accum.id.is_some() || accum.name.is_some()) {
-                    events.push(ResponseEvent::OutputItemAdded(
-                        ResponseItem::FunctionCall {
-                            id: None,
-                            name: accum.name.clone().unwrap_or_default(),
-                            namespace: None,
-                            arguments: String::new(),
-                            call_id: call_id.clone(),
-                            metadata: None,
-                        },
-                    ));
+                    events.push(ResponseEvent::OutputItemAdded(ResponseItem::FunctionCall {
+                        id: None,
+                        name: accum.name.clone().unwrap_or_default(),
+                        namespace: None,
+                        arguments: String::new(),
+                        call_id: call_id.clone(),
+                        internal_chat_message_metadata_passthrough: None,
+                    }));
                     accum.announced = true;
                 }
 
@@ -302,16 +300,14 @@ fn chunk_to_events(
             for (idx, accum) in tool_state.iter_mut() {
                 if accum.announced && !accum.finalized {
                     let call_id = accum.id.clone().unwrap_or_else(|| format!("tool_{idx}"));
-                    events.push(ResponseEvent::OutputItemDone(
-                        ResponseItem::FunctionCall {
-                            id: None,
-                            name: accum.name.clone().unwrap_or_default(),
-                            namespace: None,
-                            arguments: accum.arguments.clone(),
-                            call_id,
-                            metadata: None,
-                        },
-                    ));
+                    events.push(ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                        id: None,
+                        name: accum.name.clone().unwrap_or_default(),
+                        namespace: None,
+                        arguments: accum.arguments.clone(),
+                        call_id,
+                        internal_chat_message_metadata_passthrough: None,
+                    }));
                     accum.finalized = true;
                 }
             }
@@ -356,23 +352,21 @@ fn build_terminal_events(
                 text: std::mem::take(text_accum),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }));
     }
 
     for (idx, accum) in tool_state.iter_mut() {
         if accum.announced && !accum.finalized {
             let call_id = accum.id.clone().unwrap_or_else(|| format!("tool_{idx}"));
-            events.push(ResponseEvent::OutputItemDone(
-                ResponseItem::FunctionCall {
-                    id: None,
-                    name: accum.name.clone().unwrap_or_default(),
-                    namespace: None,
-                    arguments: accum.arguments.clone(),
-                    call_id,
-                    metadata: None,
-                },
-            ));
+            events.push(ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                id: None,
+                name: accum.name.clone().unwrap_or_default(),
+                namespace: None,
+                arguments: accum.arguments.clone(),
+                call_id,
+                internal_chat_message_metadata_passthrough: None,
+            }));
             accum.finalized = true;
         }
     }

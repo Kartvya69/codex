@@ -238,7 +238,9 @@ pub fn to_chat_completions_request(
             // Tool results MUST be sent as role:"tool" messages with the matching
             // `tool_call_id`, otherwise the model never sees the outcome of the
             // tool it invoked and multi-turn tool calling is broken.
-            ResponseItem::FunctionCallOutput { call_id, output, .. }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            }
             | ResponseItem::CustomToolCallOutput {
                 call_id, output, ..
             } => {
@@ -436,7 +438,7 @@ mod tests {
                     text: "Hello, how are you?".to_string(),
                 }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::Message {
                 id: Some("msg2".to_string()),
@@ -445,7 +447,7 @@ mod tests {
                     text: "I'm doing well!".to_string(),
                 }],
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         ];
 
@@ -485,7 +487,7 @@ mod tests {
                 text: "What's the weather?".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let tools = vec![json!({
@@ -524,7 +526,7 @@ mod tests {
                 text: "Check weather and time".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request = to_chat_completions_request(
@@ -551,7 +553,7 @@ mod tests {
                 text: "Check weather".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request = to_chat_completions_request(
@@ -581,7 +583,7 @@ mod tests {
                 text: "Hello".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request = to_chat_completions_request(
@@ -627,7 +629,7 @@ mod tests {
                 text: "Solve this problem".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let reasoning = Reasoning {
@@ -663,7 +665,7 @@ mod tests {
                 text: "hi".to_string(),
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request = to_chat_completions_request(
@@ -690,7 +692,7 @@ mod tests {
             namespace: None,
             arguments: r#"{"location":"SF"}"#.to_string(),
             call_id: "call_abc".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request =
@@ -717,7 +719,7 @@ mod tests {
             call_id: "call_xyz".to_string(),
             name: "run_shell".to_string(),
             input: "{\"cmd\":\"ls\"}".to_string(),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request =
@@ -737,7 +739,7 @@ mod tests {
             id: None,
             call_id: "call_abc".to_string(),
             output: FunctionCallOutputPayload::from_text("72F, sunny".to_string()),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request =
@@ -758,7 +760,7 @@ mod tests {
             call_id: "call_xyz".to_string(),
             name: Some("run_shell".to_string()),
             output: FunctionCallOutputPayload::from_text("done".to_string()),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }];
 
         let request =
