@@ -55,53 +55,38 @@ This fork transparently enriches unknown slugs from the public **[models.dev](ht
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Installing and running recodex
 
-Run the following on Mac or Linux to install Codex CLI:
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-```
-
-Run the following on Windows to install Codex CLI:
+**Download the prebuilt binary** from the [latest release](https://github.com/Kartvya69/recodex/releases/latest):
 
 ```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+# Linux (x86_64)
+curl -fsSL https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-unknown-linux-gnu.tar.gz \
+  | sudo tar -xz -C /usr/local/bin recodex
+recodex --version
 ```
 
-Codex CLI can also be installed via the following package managers:
-
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
-
-Then simply run `codex` to get started.
+Or browse all assets (and checksums) on the [Releases page](https://github.com/Kartvya69/recodex/releases).
 
 <details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+<summary><b>Build from source</b></summary>
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+```shell
+git clone https://github.com/Kartvya69/recodex.git
+cd recodex/codex-rs
+cargo build --release --bin recodex
+# binary: target/release/recodex
+```
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+Requires Rust 1.95 (pinned by `codex-rs/rust-toolchain.toml`) and `pkg-config` + `libssl-dev` + `libcap-dev` on Linux.
 
 </details>
 
+Then run `recodex` to get started. Configuration lives in `~/.codex/` (same as upstream Codex).
+
 ### Using Codex with your ChatGPT plan
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+Run `recodex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
 You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
 
