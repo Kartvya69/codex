@@ -28,7 +28,13 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     let action = update_action::get_update_action();
     let version_file = version_filepath(config);
-    let info = read_version_info(&version_file).ok();
+    // Treat the cache as stale if it was written by a different CLI version —
+    // it may hold a latest_version fetched from a different source (e.g. a
+    // previous build that queried a different registry). A stale cache is
+    // ignored here, which also forces a background refresh below.
+    let info = read_version_info(&version_file)
+        .ok()
+        .filter(|i| i.cli_version.as_deref() == Some(CODEX_CLI_VERSION));
 
     if match &info {
         None => true,
@@ -102,6 +108,7 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
         latest_version,
         last_checked_at: Utc::now(),
         dismissed_version: prev_info.and_then(|p| p.dismissed_version),
+        cli_version: Some(CODEX_CLI_VERSION.to_string()),
     };
 
     let json_line = format!("{}\n", serde_json::to_string(&info)?);

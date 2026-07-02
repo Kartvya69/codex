@@ -1,36 +1,29 @@
 version: 2.1
 
-# Basic CI for the codex-rs workspace.
+# CI for the recodex (codex-rs) workspace.
 #
-# What it does: fetch deps, check formatting, build the whole workspace
-# (dev profile), run the test suite, and run clippy.
+# Jobs:
+#   - build-and-test: runs on every push. fmt, debug build, tests, clippy.
+#   - build-release-binaries: runs on version tags (v*). Cross-builds the
+#     recodex binary for Linux x86_64 (gnu) and Windows x86_64 (msvc, via
+#     cargo-xwin), publishes the artifacts, and — when GITHUB_TOKEN is set in
+#     the CircleCI context — attaches them to the matching GitHub release.
 #
-# The Rust toolchain is pinned in codex-rs/rust-toolchain.toml (1.95.0);
-# rustup applies it automatically, so the image version is just a starting
-# point.
-#
-# Free-tier note: resource_class=large stays within CircleCI's free plan
-# (~2x the minute cost of medium). `medium` (4 GB) OOMs compiling codex-core's
-# test target; `large` (16 GB) does not. This is a ~120-crate workspace, so a
-# clean build still takes a while on 4 vCPU.
+# The Rust toolchain is pinned in codex-rs/rust-toolchain.toml (1.95.0).
 
 jobs:
   build-and-test:
     docker:
       # cimg/rust ships rustup, so rust-toolchain.toml is honored as-is.
-      # If this exact tag is ever missing, use cimg/rust:1.95 instead.
       - image: cimg/rust:1.95.0
-    # `large` (4 vCPU, 16 GB) is required instead of `medium` (4 GB): compiling
+    # `large` (16 GB) is required instead of `medium` (4 GB): compiling
     # codex-core's lib-test target is memory-heavy (~3-4 GB per rustc) and two
-    # concurrent rustc processes OOM (SIGKILL) on `medium`. `large` stays within
-    # the free tier at 2x the minute cost.
+    # concurrent rustc processes OOM (SIGKILL) on `medium`.
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
-      # Cap build parallelism: the lib-test targets of codex-core / codex-tui /
-      # codex-cli each need ~4-5 GB to compile. At default parallelism (one rustc
-      # per vCPU) the peak RSS exceeds the runner RAM and rustc is SIGKILLed
-      # (OOM). -j 2 keeps peak ~10 GB, safely under `large`'s 16 GB.
+      # Cap build parallelism: at default (one rustc/vCPU) the peak RSS
+      # exceeds the runner RAM and rustc is SIGKILLed. -j 2 holds peak ~10 GB.
       CARGO_BUILD_JOBS: "2"
       # Mirrors the justfile `test` target.
       RUST_MIN_STACK: "8388608"
@@ -40,7 +33,6 @@ jobs:
       # System deps:
       # - openssl-sys needs pkg-config + libssl-dev.
       # - codex-bwrap compiles vendored bubblewrap and links libcap.
-      # - sqlx uses sqlite-bundled (no system sqlite needed).
       - run:
           name: Install system dependencies
           command: |
@@ -94,9 +86,112 @@ jobs:
 
       - store_artifacts:
           path: codex-rs/target/debug/recodex
-          destination: codex-binary
+          destination: recodex-linux-debug
+
+  build-release-binaries:
+    docker:
+      - image: cimg/rust:1.95.0
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - checkout
+
+      - run:
+          name: Install system deps + Windows cross toolchain
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              pkg-config libssl-dev libcap-dev lld clang llvm zip
+
+      - run:
+          name: Add Windows MSVC target and cargo-xwin
+          command: |
+            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0
+            cargo install --locked cargo-xwin
+
+      - restore_cache:
+          keys:
+            - rel-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+            - rel-v2-
+
+      - run:
+          name: Fetch dependencies
+          working_directory: codex-rs
+          command: cargo fetch --locked
+
+      - run:
+          name: Build + package Linux x86_64 release binary
+          working_directory: codex-rs
+          command: |
+            cargo build --release --locked --bin recodex
+            strip target/release/recodex
+            (cd target/release && tar -czf ../../recodex-x86_64-unknown-linux-gnu.tar.gz recodex)
+
+      - run:
+          name: Build + package Windows x86_64 release binary (cross via cargo-xwin)
+          working_directory: codex-rs
+          command: |
+            cargo xwin build --release --locked --target x86_64-pc-windows-msvc --bin recodex
+            llvm-strip --strip-debug target/x86_64-pc-windows-msvc/release/recodex.exe
+            (cd target/x86_64-pc-windows-msvc/release && zip -q recodex-x86_64-pc-windows-msvc.zip recodex.exe && mv recodex-x86_64-pc-windows-msvc.zip ../../../..)
+
+      - save_cache:
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - codex-rs/target
+            - ~/.cache/cargo-xwin
+          key: rel-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+
+      - store_artifacts:
+          path: codex-rs/recodex-x86_64-unknown-linux-gnu.tar.gz
+          destination: recodex-x86_64-unknown-linux-gnu.tar.gz
+      - store_artifacts:
+          path: codex-rs/recodex-x86_64-pc-windows-msvc.zip
+          destination: recodex-x86_64-pc-windows-msvc.zip
+
+      - run:
+          name: Attach binaries to the GitHub release (tag + token only)
+          command: |
+            if [ -z "$CIRCLE_TAG" ]; then
+              echo "Not a tag push; skipping release upload. Binaries are in this job's artifacts."
+              exit 0
+            fi
+            if [ -z "$GITHUB_TOKEN" ]; then
+              echo "GITHUB_TOKEN not set; skipping release upload. Add it as a CircleCI context env to auto-publish. Binaries are in this job's artifacts."
+              exit 0
+            fi
+            if ! command -v gh >/dev/null 2>&1; then
+              sudo mkdir -p -m 755 /etc/apt/keyrings && \
+                wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+                sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+                sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+                sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+                sudo apt-get update && sudo apt-get install -y gh
+            fi
+            export GH_TOKEN="$GITHUB_TOKEN"
+            REPO=Kartvya69/recodex
+            # Create the release if it doesn't exist, then upload (clobber) both assets.
+            gh release create "$CIRCLE_TAG" --repo "$REPO" --verify-tag --title "$CIRCLE_TAG" \
+              --notes "recodex $CIRCLE_TAG — built by CircleCI" \
+              codex-rs/recodex-x86_64-unknown-linux-gnu.tar.gz \
+              codex-rs/recodex-x86_64-pc-windows-msvc.zip 2>/dev/null || \
+            gh release upload "$CIRCLE_TAG" --repo "$REPO" --clobber \
+              codex-rs/recodex-x86_64-unknown-linux-gnu.tar.gz \
+              codex-rs/recodex-x86_64-pc-windows-msvc.zip
 
 workflows:
   ci:
     jobs:
       - build-and-test
+      - build-release-binaries:
+          # Only on release tags — keeps CI minutes low on regular pushes.
+          # Push a tag like `v0.1.2` to build + publish both binaries.
+          filters:
+            tags:
+              only: /^v\d+\.\d+\.\d+.*$/
+            branches:
+              ignore: /.*/

@@ -8,15 +8,15 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g recodex@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g recodex@latest`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Update via the recodex Linux release tarball (curl | tar).
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    /// Update via the recodex Windows release zip (Invoke-WebRequest + Expand-Archive).
     StandaloneWindows,
 }
 
@@ -38,23 +38,22 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "recodex"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "recodex"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+                    "curl -fsSL https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-unknown-linux-gnu.tar.gz | sudo tar -xz -C /usr/local/bin recodex",
                 ],
             ),
             UpdateAction::StandaloneWindows => (
                 "powershell",
                 &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                    "-NoProfile",
+                    "-Command",
+                    "iwr https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-pc-windows-msvc.zip -OutFile $env:TEMP\\recodex.zip; Expand-Archive $env:TEMP\\recodex.zip -DestinationPath $env:LOCALAPPDATA\\recodex -Force",
                 ],
             ),
         }
@@ -145,7 +144,7 @@ mod tests {
                 "sh",
                 &[
                     "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
+                    "curl -fsSL https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-unknown-linux-gnu.tar.gz | sudo tar -xz -C /usr/local/bin recodex"
                 ][..],
             )
         );
@@ -154,10 +153,9 @@ mod tests {
             (
                 "powershell",
                 &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                    "-NoProfile",
+                    "-Command",
+                    "iwr https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-pc-windows-msvc.zip -OutFile $env:TEMP\\recodex.zip; Expand-Archive $env:TEMP\\recodex.zip -DestinationPath $env:LOCALAPPDATA\\recodex -Force"
                 ][..],
             )
         );

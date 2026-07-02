@@ -156,8 +156,11 @@ fn fetch_latest_github_release_version() -> Result<String, String> {
     }
 
     let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
+    // Accept both the upstream "rust-vX.Y.Z" tag form and a plain "vX.Y.Z"
+    // tag (the form this fork uses).
     info.tag_name
         .strip_prefix("rust-v")
+        .or_else(|| info.tag_name.strip_prefix("v"))
         .map(str::to_string)
         .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
 }
@@ -221,7 +224,7 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g recodex"
         );
         assert_eq!(
             update_action_label(&InstallContext {

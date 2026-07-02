@@ -13,6 +13,11 @@ pub(crate) struct VersionInfo {
     pub(crate) last_checked_at: DateTime<Utc>,
     #[serde(default)]
     pub(crate) dismissed_version: Option<String>,
+    /// The CLI version that wrote this cache. If it doesn't match the running
+    /// CLI version, the cache is treated as stale (the value may have been
+    /// fetched from a different source) and is re-queried.
+    #[serde(default)]
+    pub(crate) cli_version: Option<String>,
 }
 
 const VERSION_FILENAME: &str = "version.json";
@@ -36,6 +41,7 @@ pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::R
             latest_version: version.to_string(),
             last_checked_at: DateTime::<Utc>::UNIX_EPOCH,
             dismissed_version: None,
+            cli_version: None,
         },
     };
     info.dismissed_version = Some(version.to_string());

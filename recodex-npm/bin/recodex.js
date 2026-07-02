@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const GITHUB = "Kartvya69/recodex";
 
 // process.platform/process.arch -> release asset + entry binary name.

@@ -62,7 +62,7 @@ Requires Rust 1.95 (pinned by `codex-rs/rust-toolchain.toml`) and `pkg-config` +
 
 </details>
 
-> **Note:** configuration lives in `~/.codex/` (same as upstream Codex; on Windows that's `%USERPROFILE%\.codex`). Only the command name is `recodex`. v0.1.1 ships **Linux x86_64 (glibc)** and **Windows x86_64** binaries; macOS and arm64 will follow.
+> **Note:** configuration lives in `~/.codex/` (same as upstream Codex; on Windows that's `%USERPROFILE%\.codex`). Only the command name is `recodex`. v0.1.2 ships **Linux x86_64 (glibc)** and **Windows x86_64** binaries; macOS and arm64 will follow.
 
 ---
 
