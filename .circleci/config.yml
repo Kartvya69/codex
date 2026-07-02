@@ -9,9 +9,10 @@ version: 2.1
 # rustup applies it automatically, so the image version is just a starting
 # point.
 #
-# Free-tier note: resource_class=medium stays within CircleCI's free plan.
-# This is a ~120-crate workspace, so a clean build is slow on 2 vCPU.
-# If you outgrow the free tier, bump resource_class to large/xlarge.
+# Free-tier note: resource_class=large stays within CircleCI's free plan
+# (~2x the minute cost of medium). `medium` (4 GB) OOMs compiling codex-core's
+# test target; `large` (16 GB) does not. This is a ~120-crate workspace, so a
+# clean build still takes a while on 4 vCPU.
 
 jobs:
   build-and-test:
@@ -19,7 +20,11 @@ jobs:
       # cimg/rust ships rustup, so rust-toolchain.toml is honored as-is.
       # If this exact tag is ever missing, use cimg/rust:1.95 instead.
       - image: cimg/rust:1.95.0
-    resource_class: medium
+    # `large` (4 vCPU, 16 GB) is required instead of `medium` (4 GB): compiling
+    # codex-core's lib-test target is memory-heavy (~3-4 GB per rustc) and two
+    # concurrent rustc processes OOM (SIGKILL) on `medium`. `large` stays within
+    # the free tier at 2x the minute cost.
+    resource_class: large
     environment:
       CARGO_TERM_COLOR: always
       # Mirrors the justfile `test` target.
