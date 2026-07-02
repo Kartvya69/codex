@@ -6,8 +6,11 @@ pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
 }
 
 pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
+    // Accept both the upstream "rust-vX.Y.Z" tag form and a plain "vX.Y.Z"
+    // tag (the form this fork uses).
     latest_tag_name
         .strip_prefix("rust-v")
+        .or_else(|| latest_tag_name.strip_prefix("v"))
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
 }
@@ -39,7 +42,17 @@ mod tests {
 
     #[test]
     fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+        // A bare version with no recognized tag prefix is invalid.
+        assert!(extract_version_from_latest_tag("1.5.0").is_err());
+    }
+
+    #[test]
+    fn extracts_version_from_plain_v_tag() {
+        // This fork tags releases as "vX.Y.Z" (no "rust-" prefix).
+        assert_eq!(
+            extract_version_from_latest_tag("v0.1.0").expect("failed to parse version"),
+            "0.1.0"
+        );
     }
 
     #[test]
