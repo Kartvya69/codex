@@ -61,6 +61,7 @@ jobs:
           working_directory: codex-rs
           # Build the primary CLI binary explicitly for a fast fail signal,
           # then the rest of the workspace with tests compiled.
+          no_output_timeout: "60m"
           command: |
             cargo build --locked --bin recodex
             cargo build --workspace --tests --locked
@@ -128,6 +129,9 @@ jobs:
       - run:
           name: Build + package Linux x86_64 release binary
           working_directory: codex-rs
+          # Release rustc is silent for long stretches while optimizing the
+          # big crates; raise the no-output timeout well past the 10m default.
+          no_output_timeout: "60m"
           command: |
             cargo build --release --locked --bin recodex
             strip target/release/recodex
@@ -136,6 +140,7 @@ jobs:
       - run:
           name: Build + package Windows x86_64 release binary (cross via cargo-xwin)
           working_directory: codex-rs
+          no_output_timeout: "60m"
           command: |
             cargo xwin build --release --locked --target x86_64-pc-windows-msvc --bin recodex
             llvm-strip --strip-debug target/x86_64-pc-windows-msvc/release/recodex.exe
