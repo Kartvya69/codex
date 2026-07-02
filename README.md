@@ -9,6 +9,50 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+> [!IMPORTANT]
+> **This is `recodex` — a community fork of [openai/codex](https://github.com/openai/codex).**
+> It tracks upstream closely (the entire Codex CLI below works as you'd expect) and adds two things that make **bring-your-own-key (BYOK)** usage first-class: a restored **Chat Completions** wire API and automatic, richer model metadata via **[models.dev](https://models.dev)**.
+
+## What this fork changes
+
+### 1. Chat Completions is back — BYOK, natively
+
+Upstream Codex deprecated the OpenAI **Chat Completions** wire protocol and standardized on the **Responses** API (`/v1/responses`). Most third-party providers and self-hosted servers only speak `/v1/chat/completions`, so this fork restores the full Chat Completions path and lets you pick it **per provider**:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "openrouter"
+model = "anthropic/claude-sonnet-4.5"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+wire_api = "chat"   # use /v1/chat/completions instead of /v1/responses
+```
+
+Point `base_url` at any OpenAI-compatible endpoint — OpenRouter, ZAI, Together, Groq, Fireworks, or local servers like Ollama, LM Studio, and vLLM. The Chat Completions path is a full peer of the Responses path: streaming (SSE), tool/function calls (including MCP tools over chat completions), `reasoning_effort` (with `Ultra`→`Max` normalization), and `parallel_tool_calls`.
+
+> [!NOTE]
+> `wire_api = "chat"` cannot be combined with `supports_websockets` — Chat Completions is HTTP/SSE only.
+
+### 2. Better model metadata via models.dev
+
+When a model slug isn't in the bundled catalog or the provider's `/models` endpoint, upstream Codex falls back to a conservative hardcoded profile (e.g. a 272k context window) and emits a `model metadata not found` warning on every turn — which degrades context-window accounting for well-known third-party models.
+
+This fork transparently enriches unknown slugs from the public **[models.dev](https://models.dev)** catalog: it fetches the real **display name** and **context window**, then **caches them on disk** so the lookup never repeats (negative results are remembered for 24h). It's best-effort and fail-safe — on any miss or network error you get the original fallback unchanged, so it can never leave you worse off than upstream. Net effect: plug in any provider and model slug, and the model picker, context accounting, and warnings just work.
+
+<details>
+<summary><b>How it works</b></summary>
+
+- The model manager queries `https://models.dev/models.json` (10s timeout) only for slugs missing from the bundled + provider catalogs.
+- Results are persisted to `models_dev_cache.json` under your Codex home directory.
+- The enrichment is read-only metadata (display name, context window); your configured slug and provider are never changed.
+
+</details>
+
+---
+
 ## Quickstart
 
 ### Installing and running Codex CLI
