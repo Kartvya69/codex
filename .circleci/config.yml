@@ -27,6 +27,11 @@ jobs:
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
+      # Cap build parallelism: the lib-test targets of codex-core / codex-tui /
+      # codex-cli each need ~4-5 GB to compile. At default parallelism (one rustc
+      # per vCPU) the peak RSS exceeds the runner RAM and rustc is SIGKILLed
+      # (OOM). -j 2 keeps peak ~10 GB, safely under `large`'s 16 GB.
+      CARGO_BUILD_JOBS: "2"
       # Mirrors the justfile `test` target.
       RUST_MIN_STACK: "8388608"
     steps:
