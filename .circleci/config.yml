@@ -1,0 +1,90 @@
+version: 2.1
+
+# Basic CI for the codex-rs workspace.
+#
+# What it does: fetch deps, check formatting, build the whole workspace
+# (dev profile), run the test suite, and run clippy.
+#
+# The Rust toolchain is pinned in codex-rs/rust-toolchain.toml (1.95.0);
+# rustup applies it automatically, so the image version is just a starting
+# point.
+#
+# Free-tier note: resource_class=medium stays within CircleCI's free plan.
+# This is a ~120-crate workspace, so a clean build is slow on 2 vCPU.
+# If you outgrow the free tier, bump resource_class to large/xlarge.
+
+jobs:
+  build-and-test:
+    docker:
+      # cimg/rust ships rustup, so rust-toolchain.toml is honored as-is.
+      # If this exact tag is ever missing, use cimg/rust:1.95 instead.
+      - image: cimg/rust:1.95.0
+    resource_class: medium
+    environment:
+      CARGO_TERM_COLOR: always
+      # Mirrors the justfile `test` target.
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - checkout
+
+      # System deps: openssl-sys needs pkg-config + libssl-dev.
+      # sqlx uses sqlite-bundled (no system sqlite needed).
+      - run:
+          name: Install system dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - restore_cache:
+          keys:
+            - cargo-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+            - cargo-v2-
+
+      - run:
+          name: Verify toolchain and fetch dependencies
+          working_directory: codex-rs
+          command: |
+            rustup show active-toolchain
+            cargo fetch --locked
+
+      - run:
+          name: Check formatting
+          working_directory: codex-rs
+          command: cargo fmt --all -- --check
+
+      - run:
+          name: Build workspace (dev profile)
+          working_directory: codex-rs
+          # Build the primary CLI binary explicitly for a fast fail signal,
+          # then the rest of the workspace with tests compiled.
+          command: |
+            cargo build --locked --bin codex
+            cargo build --workspace --tests --locked
+
+      - run:
+          name: Test workspace
+          working_directory: codex-rs
+          command: cargo test --workspace --no-fail-fast --locked
+
+      - run:
+          name: Clippy
+          working_directory: codex-rs
+          # workspace lints (unwrap_used, expect_used, ...) are already
+          # deny-by-default in Cargo.toml; -D warnings makes everything fatal.
+          command: cargo clippy --workspace --tests --locked -- -D warnings
+
+      - save_cache:
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - codex-rs/target
+          key: cargo-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+
+      - store_artifacts:
+          path: codex-rs/target/debug/codex
+          destination: codex-binary
+
+workflows:
+  ci:
+    jobs:
+      - build-and-test
