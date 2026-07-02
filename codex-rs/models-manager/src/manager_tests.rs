@@ -193,7 +193,53 @@ fn openai_manager_for_tests_with_auth(
     endpoint_client: Arc<dyn ModelsEndpointClient>,
     auth_manager: Option<Arc<AuthManager>>,
 ) -> OpenAiModelsManager {
+    // Use the noop models.dev resolver so manager tests never touch the network.
     OpenAiModelsManager::new(codex_home, endpoint_client, auth_manager)
+        .with_models_dev_resolver(Arc::new(crate::models_dev::NoopModelsDevResolver))
+}
+
+/// Offline models.dev resolver that always reports a single slug with a fixed
+/// context window, so the fallback-enrichment path in `get_model_info` can be
+/// exercised deterministically. (`ModelsDevEntry` is not `Clone`, so the catalog
+/// is rebuilt per call rather than stored.)
+#[derive(Debug)]
+struct StubCatalogResolver {
+    slug: String,
+    context: i64,
+}
+
+impl crate::models_dev::ModelsDevResolver for StubCatalogResolver {
+    fn fetch_catalog<'a>(
+        &'a self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<crate::models_dev::CatalogMap>> + Send + 'a>,
+    > {
+        let mut catalog = crate::models_dev::CatalogMap::new();
+        catalog.insert(
+            self.slug.clone(),
+            crate::models_dev::ModelsDevEntry {
+                name: Some(self.slug.clone()),
+                limit: Some(crate::models_dev::ModelsDevLimit {
+                    context: Some(self.context),
+                }),
+            },
+        );
+        Box::pin(async move { Some(catalog) })
+    }
+}
+
+fn openai_manager_for_tests_with_resolver(
+    codex_home: std::path::PathBuf,
+    resolver: Arc<dyn crate::models_dev::ModelsDevResolver>,
+) -> OpenAiModelsManager {
+    OpenAiModelsManager::new(
+        codex_home,
+        TestModelsEndpoint::new(Vec::new()),
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    )
+    .with_models_dev_resolver(resolver)
 }
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
@@ -263,6 +309,38 @@ async fn get_model_info_tracks_fallback_usage() {
         .await;
     assert!(unknown.used_fallback_model_metadata);
     assert_eq!(unknown.slug, "model-that-does-not-exist");
+}
+
+#[tokio::test]
+async fn get_model_info_user_override_beats_models_dev_enrichment() {
+    let codex_home = tempdir().expect("temp dir");
+
+    // The models.dev catalog will claim a 1,000,000-token window for the slug.
+    let manager = openai_manager_for_tests_with_resolver(
+        codex_home.path().to_path_buf(),
+        Arc::new(StubCatalogResolver {
+            slug: "custom-fallback-model".to_string(),
+            context: 1_000_000,
+        }),
+    );
+
+    // The user explicitly overrides the context window to 500,000. This must
+    // win over the 1,000,000 value recovered from models.dev — priority is
+    // user config > catalog > hardcoded fallback. Without re-applying the
+    // overrides after enrichment, the catalog value clobbers the user override.
+    let config = ModelsManagerConfig {
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let model_info = manager
+        .get_model_info("custom-fallback-model", &config)
+        .await;
+
+    // Enrichment ran (no longer flagged as a hardcoded fallback)...
+    assert!(!model_info.used_fallback_model_metadata);
+    // ...yet the user override held: 500,000, not the catalog's 1,000,000.
+    assert_eq!(model_info.context_window, Some(500_000));
 }
 
 #[tokio::test]

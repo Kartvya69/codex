@@ -632,3 +632,47 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn chat_wire_api_skips_websocket_prewarm() {
+    // When wire_api is Chat, WebSocket prewarm should be skipped
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    let thread_id = ThreadId::new();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id,
+        provider,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+
+    // Chat API should not enable WebSocket prewarm
+    assert!(!client.responses_websocket_enabled());
+}
+
+#[test]
+fn compaction_with_chat_returns_error() {
+    // When wire_api is Chat and compaction is enabled, should return error
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    let thread_id = ThreadId::new();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id,
+        provider,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+
+    // Chat API does not support remote compaction
+    assert!(!client.state.provider.info().supports_remote_compaction());
+}

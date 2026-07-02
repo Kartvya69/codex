@@ -321,11 +321,23 @@ impl CoreToolRuntime for ExposureOverride {
 
 pub struct ToolRegistry {
     tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>,
+    /// Secondary index from the flattened tool name (`namespace + name`) to the
+    /// handler. The Chat Completions wire format has no namespace, so a model
+    /// call for a namespaced tool (e.g. an MCP tool) arrives as a single flat
+    /// name with `namespace: None`; this index lets `tool()` resolve it.
+    tools_by_flat: HashMap<String, Arc<dyn CoreToolRuntime>>,
 }
 
 impl ToolRegistry {
     fn new(tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>) -> Self {
-        Self { tools }
+        let tools_by_flat = tools
+            .iter()
+            .map(|(name, tool)| (flat_tool_name(name).into_owned(), Arc::clone(tool)))
+            .collect();
+        Self {
+            tools,
+            tools_by_flat,
+        }
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -357,7 +369,15 @@ impl ToolRegistry {
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools.get(name).map(Arc::clone)
+        if let Some(tool) = self.tools.get(name) {
+            return Some(Arc::clone(tool));
+        }
+        // Fallback for the Chat Completions path: a namespaced tool (e.g. an
+        // MCP tool) arrives as a single flat name with `namespace: None`.
+        // Resolve it via the flat-name index so it routes to the right handler.
+        self.tools_by_flat
+            .get(flat_tool_name(name).as_ref())
+            .map(Arc::clone)
     }
 
     #[cfg(test)]

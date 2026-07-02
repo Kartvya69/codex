@@ -92,3 +92,14 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+
+# oh-my-claudecode runtime state — ephemeral (machine-specific paths, session
+# UUIDs, tool/HUD telemetry). Authored docs under .omc/plans and .omc/handoffs
+# stay tracked. The **/ prefix also catches per-crate .omc dirs created under
+# cargo workspace members (e.g. codex-rs/codex-api/.omc).
+**/.omc/state/
+**/.omc/sessions/
+**/.omc/notepad.md
+**/.omc/project-memory.json
+**/.omc/research/
+**/.omc/logs/
