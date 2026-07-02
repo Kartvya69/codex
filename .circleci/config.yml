@@ -70,7 +70,7 @@ jobs:
           # Build the primary CLI binary explicitly for a fast fail signal,
           # then the rest of the workspace with tests compiled.
           command: |
-            cargo build --locked --bin codex
+            cargo build --locked --bin recodex
             cargo build --workspace --tests --locked
 
       - run:
@@ -93,7 +93,7 @@ jobs:
           key: cargo-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
 
       - store_artifacts:
-          path: codex-rs/target/debug/codex
+          path: codex-rs/target/debug/recodex
           destination: codex-binary
 
 workflows:

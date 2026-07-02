@@ -124,7 +124,7 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
         "compact",
     )?;
     let codex_bin = toml::Value::String(
-        codex_utils_cargo_bin::cargo_bin("codex")?
+        codex_utils_cargo_bin::cargo_bin("recodex")?
             .to_string_lossy()
             .into_owned(),
     );
