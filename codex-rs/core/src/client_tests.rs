@@ -893,9 +893,11 @@ fn chat_wire_api_skips_websocket_prewarm() {
     let thread_id = ThreadId::new();
     let client = ModelClient::new(
         /*auth_manager*/ None,
+        /*agent_identity_policy*/ codex_login::auth::AgentIdentityAuthPolicy::JwtOnly,
         thread_id,
         provider,
         SessionSource::Cli,
+        /*originator*/ "test_originator".to_string(),
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
@@ -915,9 +917,11 @@ fn compaction_with_chat_returns_error() {
     let thread_id = ThreadId::new();
     let client = ModelClient::new(
         /*auth_manager*/ None,
+        /*agent_identity_policy*/ codex_login::auth::AgentIdentityAuthPolicy::JwtOnly,
         thread_id,
         provider,
         SessionSource::Cli,
+        /*originator*/ "test_originator".to_string(),
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
