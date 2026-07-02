@@ -13,7 +13,7 @@
 `recodex` is a coding agent that runs locally in your terminal. It tracks upstream Codex closely — everything Codex does works here too — and adds two things that matter when you point it at **your own model provider and key**:
 
 1. **A restored Chat Completions wire API** — use any OpenAI-compatible `/v1/chat/completions` endpoint (OpenRouter, ZAI, Together, Groq, Fireworks, Ollama, LM Studio, vLLM, …).
-2. **Live model-catalog discovery + [models.dev](https://models.dev) enrichment** — for BYOK providers the model picker is populated from the provider's own `/v1/models` endpoint, and any unknown slug still gets a real display name + context window (cached on disk). No more `model metadata not found` warnings for third-party models.
+2. **Live model-catalog discovery + [models.dev](https://models.dev) enrichment** — for BYOK providers the model picker is populated from the provider's own `/v1/models` endpoint, and unknown slugs are enriched with a real display name + context window from models.dev when available (cached on disk), eliminating the `model metadata not found` warning for any model models.dev recognizes. Slugs models.dev doesn't know fall back to a safe default.
 
 ---
 
@@ -96,7 +96,7 @@ Upstream Codex only knows about OpenAI's own models: a third-party provider's mo
 - **Catalog discovery.** For BYOK providers it queries the provider's own standard OpenAI-compatible `/v1/models` endpoint, so the models your key actually serves populate the picker. The listing is decoded into model entries and then enriched from **[models.dev](https://models.dev)** with the real **display name** and **context window**. If the provider has no `/v1/models` endpoint (or the request fails), `recodex` falls back to the bundled OpenAI catalog — so it can never leave you worse off than upstream.
 - **Per-slug enrichment.** A slug that isn't in the bundled or provider catalog is still looked up on models.dev, with results cached on disk so the lookup never repeats (negative results are remembered for 24h).
 
-Net effect: point `recodex` at any provider, and the model picker, context accounting, and warnings just work.
+Net effect: point `recodex` at any provider and the picker, context accounting, and metadata warnings are handled correctly — enriched where models.dev has data, a safe fallback where it doesn't.
 
 <details>
 <summary><b>How it works</b></summary>
