@@ -28,11 +28,23 @@ recodex --version
 
 The npm package is a thin launcher: on first run it downloads the prebuilt binary for your platform from the [latest release](https://github.com/Kartvya69/recodex/releases) and caches it under `~/.recodex/bin/`; later runs launch it directly.
 
-**Prebuilt binary** (Linux x86_64):
+**Prebuilt binary** — Linux x86_64:
 
 ```shell
 curl -fsSL https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-unknown-linux-gnu.tar.gz \
   | sudo tar -xz -C /usr/local/bin recodex
+recodex --version
+```
+
+**Prebuilt binary** — Windows x86_64 (PowerShell):
+
+```powershell
+$dst = "$env:LOCALAPPDATA\recodex"
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+Invoke-WebRequest "https://github.com/Kartvya69/recodex/releases/latest/download/recodex-x86_64-pc-windows-msvc.zip" -OutFile "$dst\recodex.zip"
+Expand-Archive "$dst\recodex.zip" -DestinationPath $dst -Force
+Remove-Item "$dst\recodex.zip"
+# Add $dst to your PATH, then:
 recodex --version
 ```
 
@@ -50,7 +62,7 @@ Requires Rust 1.95 (pinned by `codex-rs/rust-toolchain.toml`) and `pkg-config` +
 
 </details>
 
-> **Note:** configuration lives in `~/.codex/` (same as upstream Codex). Only the command name is `recodex`. v0.1.0 ships a Linux x86_64 (glibc) binary; macOS / Windows / arm64 builds will follow.
+> **Note:** configuration lives in `~/.codex/` (same as upstream Codex; on Windows that's `%USERPROFILE%\.codex`). Only the command name is `recodex`. v0.1.1 ships **Linux x86_64 (glibc)** and **Windows x86_64** binaries; macOS and arm64 will follow.
 
 ---
 

@@ -12,18 +12,25 @@ import {
   existsSync,
   mkdirSync,
   renameSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const GITHUB = "Kartvya69/recodex";
 
-// Map process.platform/process.arch -> the release asset triple.
-// v0.1.0 ships Linux x86_64 (glibc). Other platforms will be added in later
-// releases; until then we fail fast with a helpful message.
-const ASSET_BY_PLATFORM = {
-  "linux-x64": "recodex-x86_64-unknown-linux-gnu.tar.gz",
+// process.platform/process.arch -> release asset + entry binary name.
+const PLATFORM = {
+  "linux-x64": {
+    asset: "recodex-x86_64-unknown-linux-gnu.tar.gz",
+    entry: "recodex",
+  },
+  "win32-x64": {
+    asset: "recodex-x86_64-pc-windows-msvc.zip",
+    entry: "recodex.exe",
+  },
 };
 
 function fail(msg, suggestion) {
@@ -39,8 +46,8 @@ function cacheDir() {
 
 async function ensureBinary() {
   const key = `${process.platform}-${process.arch}`;
-  const asset = ASSET_BY_PLATFORM[key];
-  if (!asset) {
+  const p = PLATFORM[key];
+  if (!p) {
     fail(
       `no prebuilt binary for ${process.platform}/${process.arch} in v${VERSION}.`,
       `Browse https://github.com/${GITHUB}/releases for available assets, or build from source.`,
@@ -48,12 +55,12 @@ async function ensureBinary() {
   }
 
   const dir = cacheDir();
-  const cached = path.join(dir, `recodex-${VERSION}`);
+  const cached = path.join(dir, `recodex-${VERSION}-${p.entry}`);
   if (existsSync(cached)) return cached;
 
   mkdirSync(dir, { recursive: true });
 
-  const url = `https://github.com/${GITHUB}/releases/download/v${VERSION}/${asset}`;
+  const url = `https://github.com/${GITHUB}/releases/download/v${VERSION}/${p.asset}`;
   process.stderr.write(`recodex: downloading v${VERSION} (${key}) — one-time setup...\n`);
 
   let res;
@@ -65,34 +72,52 @@ async function ensureBinary() {
   if (!res.ok) fail(`download failed: HTTP ${res.status} for ${url}`);
 
   const buf = Buffer.from(await res.arrayBuffer());
-  const code = await new Promise((resolve) => {
-    const t = spawn("tar", ["-xz", "-C", dir, "recodex"], {
-      stdio: ["pipe", "inherit", "inherit"],
-    });
-    t.on("exit", resolve);
-    t.on("error", (err) => {
-      console.error(`recodex: tar extraction failed: ${err.message}`);
-      resolve(1);
-    });
-    t.stdin.end(buf);
-  });
-  if (code !== 0) fail("failed to extract the downloaded tarball");
 
-  const extracted = path.join(dir, "recodex");
-  if (!existsSync(extracted)) fail("extracted binary not found after untar");
+  if (process.platform === "win32") {
+    // Windows: write the zip to a temp file and Expand-Archive it (always
+    // available on Windows; avoids depending on a system `tar`).
+    const tmpZip = path.join(dir, `__recodex-${VERSION}-${process.pid}.zip`);
+    writeFileSync(tmpZip, buf);
+    const code = await new Promise((resolve) => {
+      const t = spawn(
+        "powershell",
+        ["-NoProfile", "-Command", `Expand-Archive -Path '${tmpZip}' -DestinationPath '${dir}' -Force`],
+        { stdio: "inherit" },
+      );
+      t.on("exit", resolve);
+      t.on("error", (err) => {
+        console.error(`recodex: Expand-Archive failed: ${err.message}`);
+        resolve(1);
+      });
+    });
+    try { unlinkSync(tmpZip); } catch { /* ignore */ }
+    if (code !== 0) fail("failed to extract the downloaded zip (Expand-Archive)");
+  } else {
+    // POSIX: stream the gzip tarball into tar.
+    const code = await new Promise((resolve) => {
+      const t = spawn("tar", ["-xz", "-C", dir, p.entry], {
+        stdio: ["pipe", "inherit", "inherit"],
+      });
+      t.on("exit", resolve);
+      t.on("error", (err) => {
+        console.error(`recodex: tar extraction failed: ${err.message}`);
+        resolve(1);
+      });
+      t.stdin.end(buf);
+    });
+    if (code !== 0) fail("failed to extract the downloaded tarball");
+  }
+
+  const extracted = path.join(dir, p.entry);
+  if (!existsSync(extracted)) fail("extracted binary not found after extraction");
   renameSync(extracted, cached);
-  chmodSync(cached, 0o755);
+  try { chmodSync(cached, 0o755); } catch { /* Windows: chmod is a no-op */ }
   return cached;
 }
 
 const binaryPath = await ensureBinary();
 
-const env = {
-  ...process.env,
-  CODEX_MANAGED_PACKAGE_ROOT: undefined,
-};
-
-const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit", env });
+const child = spawn(binaryPath, process.argv.slice(2), { stdio: "inherit" });
 
 child.on("error", (err) => {
   console.error(`recodex: failed to launch binary: ${err.message}`);

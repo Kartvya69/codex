@@ -1,6 +1,6 @@
 {
   "name": "recodex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "recodex — a community fork of OpenAI Codex with a restored Chat Completions wire API and models.dev BYOK metadata enrichment.",
   "license": "Apache-2.0",
   "author": "",
