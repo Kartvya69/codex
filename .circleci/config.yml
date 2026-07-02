@@ -27,13 +27,15 @@ jobs:
     steps:
       - checkout
 
-      # System deps: openssl-sys needs pkg-config + libssl-dev.
-      # sqlx uses sqlite-bundled (no system sqlite needed).
+      # System deps:
+      # - openssl-sys needs pkg-config + libssl-dev.
+      # - codex-bwrap compiles vendored bubblewrap and links libcap.
+      # - sqlx uses sqlite-bundled (no system sqlite needed).
       - run:
           name: Install system dependencies
           command: |
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+            sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libcap-dev
 
       - restore_cache:
           keys:
