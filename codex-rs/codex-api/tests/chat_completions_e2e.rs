@@ -248,7 +248,7 @@ async fn responses_api_still_works() -> Result<()> {
         model: "gpt-4".to_string(),
         instructions: String::new(),
         input: vec![],
-        tools: vec![],
+        tools: None,
         tool_choice: "auto".to_string(),
         parallel_tool_calls: false,
         reasoning: None,

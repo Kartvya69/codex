@@ -718,6 +718,7 @@ mod tests {
             status: None,
             call_id: "call_xyz".to_string(),
             name: "run_shell".to_string(),
+            namespace: None,
             input: "{\"cmd\":\"ls\"}".to_string(),
             internal_chat_message_metadata_passthrough: None,
         }];
