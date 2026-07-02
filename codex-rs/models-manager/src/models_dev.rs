@@ -119,7 +119,7 @@ impl ModelsDevResolver for NoopModelsDevResolver {
 /// is returned unchanged.
 pub(crate) async fn enrich(
     codex_home: &Path,
-    fallback: ModelInfo,
+    mut fallback: ModelInfo,
     resolver: &dyn ModelsDevResolver,
 ) -> ModelInfo {
     let slug = fallback.slug.clone();
@@ -131,7 +131,8 @@ pub(crate) async fn enrich(
         && let Some(metadata) = &record.found
     {
         info!(model = %slug, "models.dev: using cached metadata");
-        return apply_metadata(fallback, metadata);
+        apply_metadata(&mut fallback, metadata);
+        return fallback;
     }
 
     // Negative cache hit (within TTL): skip the network entirely.
@@ -161,7 +162,8 @@ pub(crate) async fn enrich(
             );
             persist_cache(&cache_path, &cache).await;
             info!(model = %slug, "models.dev: enriched fallback metadata");
-            apply_metadata(fallback, &metadata)
+            apply_metadata(&mut fallback, &metadata);
+            fallback
         }
         None => {
             // Remember the miss so we don't re-query every session.
@@ -178,8 +180,105 @@ pub(crate) async fn enrich(
     }
 }
 
-/// Merge remembered metadata onto the fallback descriptor.
-fn apply_metadata(mut model: ModelInfo, metadata: &CachedModelMetadata) -> ModelInfo {
+/// Batch enrichment for a freshly fetched provider catalog.
+///
+/// Used after a BYOK provider's `/v1/models` listing is parsed into minimal
+/// [`ModelInfo`] entries (no context window). This fetches the models.dev
+/// catalog once and fills in the display name + context window for every entry
+/// that is still missing one, persisting each result (positive or negative) to
+/// the on-disk cache so later sessions and per-slug [`enrich`] calls skip the
+/// network. Entirely fail-safe: on any error the minimal entries are returned
+/// unchanged, and entries that already carry a context window are skipped.
+pub(crate) async fn enrich_many(
+    codex_home: &Path,
+    models: &mut [ModelInfo],
+    resolver: &dyn ModelsDevResolver,
+) {
+    if !models.iter().any(|model| model.context_window.is_none()) {
+        return;
+    }
+
+    let cache_path = codex_home.join(CACHE_FILE_NAME);
+    let mut cache = load_cache(&cache_path).await;
+
+    // First pass: satisfy as many entries as possible from the on-disk cache so
+    // a routine provider refresh (every few minutes) does not re-hit models.dev
+    // once every slug has been resolved once.
+    let mut unresolved: Vec<usize> = Vec::new();
+    for (index, model) in models.iter_mut().enumerate() {
+        if model.context_window.is_some() {
+            continue;
+        }
+
+        let slug = model.slug.clone();
+        if let Some(record) = cache.get(&slug)
+            && let Some(metadata) = &record.found
+        {
+            apply_metadata(model, metadata);
+            continue;
+        }
+
+        // Stale negative entries are re-queried; fresh ones are skipped.
+        if let Some(record) = cache.get(&slug)
+            && let Some(checked_at) = record.not_found_at
+            && chrono::Utc::now().signed_duration_since(checked_at) < NEGATIVE_CACHE_TTL
+        {
+            continue;
+        }
+
+        unresolved.push(index);
+    }
+
+    // Every minimal entry was satisfied from cache: no network needed.
+    if unresolved.is_empty() {
+        return;
+    }
+
+    let Some(catalog) = resolver.fetch_catalog().await else {
+        // Offline / timeout / parse error: leave the minimal entries unchanged.
+        return;
+    };
+
+    let mut changed = false;
+    for index in unresolved {
+        let model = &mut models[index];
+        let slug = model.slug.clone();
+        match find_entry(&slug, &catalog).map(metadata_from_entry) {
+            Some(metadata) => {
+                apply_metadata(model, &metadata);
+                cache.insert(
+                    slug,
+                    CacheRecord {
+                        found: Some(metadata),
+                        not_found_at: None,
+                    },
+                );
+                changed = true;
+            }
+            None => {
+                cache.insert(
+                    slug,
+                    CacheRecord {
+                        found: None,
+                        not_found_at: Some(chrono::Utc::now()),
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        info!(
+            enriched = cache.values().filter(|r| r.found.is_some()).count(),
+            "models.dev: enriched provider catalog"
+        );
+        persist_cache(&cache_path, &cache).await;
+    }
+}
+
+/// Merge remembered metadata onto the model descriptor in place.
+fn apply_metadata(model: &mut ModelInfo, metadata: &CachedModelMetadata) {
     if let Some(display_name) = &metadata.display_name {
         model.display_name = display_name.clone();
     }
@@ -193,7 +292,6 @@ fn apply_metadata(mut model: ModelInfo, metadata: &CachedModelMetadata) -> Model
     }
     // We now have authoritative metadata, so this is no longer a fallback.
     model.used_fallback_model_metadata = false;
-    model
 }
 
 fn metadata_from_entry(entry: &ModelsDevEntry) -> CachedModelMetadata {

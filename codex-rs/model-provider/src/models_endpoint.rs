@@ -125,6 +125,17 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
     ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
         Box::pin(OpenAiModelsEndpoint::list_models(self, client_version))
     }
+
+    fn prefer_remote_catalog(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async move {
+            // Third-party BYOK providers (OpenRouter, ZAI, Together, Groq,
+            // Ollama, vLLM, ...) expose a standard `/v1/models` listing. Probe
+            // it to populate the catalog; the bundled OpenAI catalog is the
+            // fallback on miss. Excludes the Codex/ChatGPT backend (uses OpenAI
+            // auth + the rich `/models` endpoint) and Amazon Bedrock (AWS auth).
+            !self.provider_info.requires_openai_auth && !self.provider_info.is_amazon_bedrock()
+        })
+    }
 }
 
 #[derive(Clone)]

@@ -13,6 +13,9 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    /// `/models <slug>` switches the active model directly; bare `/models`
+    /// opens the picker. Kept adjacent to `Model` so the two surface together.
+    Models,
     Ide,
     Permissions,
     Keymap,
@@ -114,6 +117,9 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Models => {
+                "switch model directly: /models <slug> (or open the picker with /models)"
+            }
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -167,6 +173,7 @@ impl SlashCommand {
                 | SlashCommand::Btw
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
+                | SlashCommand::Models
         )
     }
 
@@ -209,6 +216,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Resume
             | SlashCommand::Model
+            | SlashCommand::Models
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Copy
@@ -304,5 +312,19 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn models_command_parses_and_supports_inline_args() {
+        assert_eq!(SlashCommand::Models.command(), "models");
+        assert_eq!(SlashCommand::from_str("models"), Ok(SlashCommand::Models));
+        // Distinct from the singular picker command.
+        assert_ne!(SlashCommand::Models, SlashCommand::Model);
+        assert_eq!(SlashCommand::Model.command(), "model");
+        assert!(
+            SlashCommand::Models.supports_inline_args(),
+            "`/models <slug>` must accept an inline model slug"
+        );
+        assert!(SlashCommand::Models.available_during_task());
     }
 }

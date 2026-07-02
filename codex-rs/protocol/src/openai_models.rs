@@ -438,6 +438,61 @@ impl ModelInfo {
         self.context_window.or(self.max_context_window)
     }
 
+    /// Build a minimal descriptor for a model `id` advertised by a third-party
+    /// (BYOK) provider's standard OpenAI-compatible `/v1/models` endpoint.
+    ///
+    /// The standard endpoint only exposes ids (e.g. `glm-5.2`,
+    /// `anthropic/claude-sonnet-4.5`); it carries no context window, reasoning
+    /// levels, or display name. We construct a minimal, picker-visible entry
+    /// and leave [`Self::context_window`] unset so the model manager can enrich
+    /// it from the public models.dev catalog. This is intentionally not marked
+    /// as fallback metadata: the provider genuinely advertises this model, so
+    /// the "unknown model" warning should not fire.
+    pub fn minimal_remote(slug: impl Into<String>) -> Self {
+        let slug = slug.into();
+        Self {
+            slug: slug.clone(),
+            display_name: slug,
+            description: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: Vec::new(),
+            shell_type: ConfigShellToolType::Default,
+            visibility: ModelVisibility::List,
+            supported_in_api: true,
+            priority: 99,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            availability_nux: None,
+            upgrade: None,
+            base_instructions: crate::models::BASE_INSTRUCTIONS_DEFAULT.to_string(),
+            model_messages: None,
+            include_skills_usage_instructions: false,
+            supports_reasoning_summaries: false,
+            default_reasoning_summary: ReasoningSummary::Auto,
+            support_verbosity: false,
+            default_verbosity: None,
+            apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
+            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            supports_parallel_tool_calls: false,
+            supports_image_detail_original: false,
+            context_window: None,
+            max_context_window: None,
+            auto_compact_token_limit: None,
+            comp_hash: None,
+            effective_context_window_percent: 95,
+            experimental_supported_tools: Vec::new(),
+            input_modalities: default_input_modalities(),
+            used_fallback_model_metadata: false,
+            supports_search_tool: false,
+            use_responses_lite: false,
+            auto_review_model_override: None,
+            tool_mode: None,
+            multi_agent_version: None,
+        }
+    }
+
     pub fn auto_compact_token_limit(&self) -> Option<i64> {
         let context_limit = self
             .resolved_context_window()
