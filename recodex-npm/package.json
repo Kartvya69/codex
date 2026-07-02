@@ -1,0 +1,35 @@
+{
+  "name": "recodex",
+  "version": "0.1.0",
+  "description": "recodex — a community fork of OpenAI Codex with a restored Chat Completions wire API and models.dev BYOK metadata enrichment.",
+  "license": "Apache-2.0",
+  "author": "",
+  "homepage": "https://github.com/Kartvya69/recodex#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kartvya69/recodex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kartvya69/recodex/issues"
+  },
+  "keywords": [
+    "codex",
+    "cli",
+    "agent",
+    "ai",
+    "byok",
+    "chat-completions",
+    "openai"
+  ],
+  "type": "module",
+  "bin": {
+    "recodex": "bin/recodex.js"
+  },
+  "files": [
+    "bin/recodex.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "engineStrict": true
+}
