@@ -27,12 +27,21 @@ fn name_part_strips_single_provider_prefix() {
 #[test]
 fn find_entry_matches_exact_key_then_name_then_prefix() {
     let mut catalog = HashMap::new();
-    catalog.insert("zhipuai/glm-5.2".to_string(), entry("GLM-5.2", Some(1_000_000)));
-    catalog.insert("openai/gpt-5.2".to_string(), entry("GPT-5.2", Some(400_000)));
+    catalog.insert(
+        "zhipuai/glm-5.2".to_string(),
+        entry("GLM-5.2", Some(1_000_000)),
+    );
+    catalog.insert(
+        "openai/gpt-5.2".to_string(),
+        entry("GPT-5.2", Some(400_000)),
+    );
     catalog.insert("openai/gpt-5".to_string(), entry("GPT-5", Some(400_000)));
 
     // Exact key.
-    assert_eq!(context_of(find_entry("zhipuai/glm-5.2", &catalog)), Some(1_000_000));
+    assert_eq!(
+        context_of(find_entry("zhipuai/glm-5.2", &catalog)),
+        Some(1_000_000)
+    );
     // Exact name part, no provider prefix on the slug.
     assert_eq!(context_of(find_entry("glm-5.2", &catalog)), Some(1_000_000));
     // Case-insensitive name match.

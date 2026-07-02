@@ -390,9 +390,9 @@ async fn chat_completions_tool_calls_e2e() -> Result<()> {
     let (added_name, added_call_id) = events
         .iter()
         .find_map(|ev| match ev {
-            ResponseEvent::OutputItemAdded(ResponseItem::FunctionCall { name, call_id, .. }) => {
-                Some((name.clone(), call_id.clone()))
-            }
+            ResponseEvent::OutputItemAdded(ResponseItem::FunctionCall {
+                name, call_id, ..
+            }) => Some((name.clone(), call_id.clone())),
             _ => None,
         })
         .context("expected OutputItemAdded(FunctionCall)")?;

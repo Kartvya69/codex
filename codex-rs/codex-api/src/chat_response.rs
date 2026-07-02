@@ -230,8 +230,7 @@ mod tests {
         // this must still map to ContextWindowExceeded, not a generic BAD_REQUEST.
         let error = ChatError {
             error: ChatErrorDetail {
-                message: "This model's maximum context length is 8192 tokens."
-                    .to_string(),
+                message: "This model's maximum context length is 8192 tokens.".to_string(),
                 r#type: "invalid_request_error".to_string(),
                 code: Some("context_length_exceeded".to_string()),
             },

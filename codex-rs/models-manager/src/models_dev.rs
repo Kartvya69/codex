@@ -233,10 +233,7 @@ async fn fetch_catalog() -> Result<CatalogMap, String> {
 
 /// Find the catalog entry matching `slug`, tolerant of provider prefixes and
 /// minor version suffixes (e.g. `glm-5.2`, `zhipuai/glm-5.2`, `gpt-5.2-codex`).
-fn find_entry<'a>(
-    slug: &str,
-    catalog: &'a CatalogMap,
-) -> Option<&'a ModelsDevEntry> {
+fn find_entry<'a>(slug: &str, catalog: &'a CatalogMap) -> Option<&'a ModelsDevEntry> {
     // 1. Exact key match (slug already carries a provider prefix).
     if let Some(entry) = catalog.get(slug) {
         return Some(entry);

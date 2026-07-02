@@ -2,9 +2,9 @@ pub(crate) mod cache;
 pub mod collaboration_mode_presets;
 pub(crate) mod config;
 pub mod manager;
-pub(crate) mod models_dev;
 pub mod model_info;
 pub mod model_presets;
+pub(crate) mod models_dev;
 pub mod test_support;
 
 pub use codex_protocol::auth::AuthMode;

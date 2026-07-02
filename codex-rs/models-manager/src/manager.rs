@@ -293,14 +293,19 @@ impl ModelsManager for OpenAiModelsManager {
         Box::pin(
             async move {
                 let remote_models = self.get_remote_models().await;
-                let model_info = construct_model_info_from_candidates(model, &remote_models, config);
+                let model_info =
+                    construct_model_info_from_candidates(model, &remote_models, config);
                 // When the slug resolved to the hardcoded fallback, try to
                 // recover authoritative metadata from the public models.dev
                 // catalog before returning. On any miss the original fallback
                 // is preserved unchanged.
                 let model_info = if model_info.used_fallback_model_metadata {
-                    models_dev::enrich(&self.codex_home, model_info, self.models_dev_resolver.as_ref())
-                        .await
+                    models_dev::enrich(
+                        &self.codex_home,
+                        model_info,
+                        self.models_dev_resolver.as_ref(),
+                    )
+                    .await
                 } else {
                     model_info
                 };
