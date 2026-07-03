@@ -9,3 +9,12 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
 
 [target.'cfg(all(windows, target_env = "gnu"))']
 rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
+
+# Use lld (faster than GNU ld) for native Linux x86_64 debug+release links. This is a real
+# win on a ~93-crate workspace where the final binary link is a meaningful slice of build time.
+# Gated to the host gnu triple so it CANNOT leak into the cargo-xwin MSVC cross build, which
+# always passes an explicit `--target *-pc-windows-msvc` (handled by the cfg blocks above).
+# Requires lld on PATH: present at /usr/bin/lld locally (lld-18) and installed in CI via the
+# `lld` apt package (see .circleci/config.yml build-deps step in BOTH jobs).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
