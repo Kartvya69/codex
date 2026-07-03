@@ -534,6 +534,22 @@ strip = false
 # Balance parallel release code generation against binary size.
 codegen-units = 4
 
+# CI release profile: built with `cargo build --profile dist` by the
+# release packaging job. Tuned for build-machine friendliness over
+# last-percent binary size. Disabling thin LTO is the single biggest
+# memory and wall-clock win: it removes the cross-crate monomorphization
+# merging that pushed rustc to ~8-10GB RSS on large crates (codex-tui,
+# codex-core) and OOMed even at -j 2 on a 16GB runner. With LTO off and
+# codegen-units raised, parallel rustc processes stay small enough that
+# the runner can use -j 2 or higher.
+[profile.dist]
+inherits = "release"
+lto = false
+opt-level = 2
+codegen-units = 16
+panic = "unwind"
+strip = "symbols"
+
 [profile.profiling]
 inherits = "release"
 debug = "full"

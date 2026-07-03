@@ -16,9 +16,9 @@ jobs:
     docker:
       # cimg/rust ships rustup, so rust-toolchain.toml is honored as-is.
       - image: cimg/rust:1.95.0
-    # `large` (16 GB) is required instead of `medium` (4 GB): compiling
-    # codex-core's lib-test target is memory-heavy (~3-4 GB per rustc) and two
-    # concurrent rustc processes OOM (SIGKILL) on `medium`.
+    # Keep `large` (16 GB): nextest + sccache cut RSS substantially, but
+    # codex-core's lib-test rustc still peaks ~3-4 GB each and the workspace
+    # has many concurrent rustc/nextest processes. Do NOT drop to `medium`.
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
@@ -27,19 +27,41 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       # Mirrors the justfile `test` target.
       RUST_MIN_STACK: "8388608"
+      # sccache: avoid recompiling unchanged crates across dep bumps.
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: "2G"
+      SCCACHE_DIR: ~/.cache/sccache
     steps:
       - checkout
 
       # System deps:
       # - openssl-sys needs pkg-config + libssl-dev.
       # - codex-bwrap compiles vendored bubblewrap and links libcap.
+      # - lld is the native Linux linker wired in codex-rs/.cargo/config.toml.
       - run:
           name: Install system dependencies
           command: |
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libcap-dev
+            sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libcap-dev lld
+
+      # Install cargo-nextest (prebuilt official one-liner) and sccache
+      # (prebuilt binary via cargo-binstall). Both avoid compiling from source.
+      - run:
+          name: Install cargo-nextest and sccache
+          command: |
+            curl -LsSf https://get.nexte.st/v0.9.96/linux-x86_64 | tar xz -C ${CARGO_HOME:-$HOME/.cargo}/bin
+            cargo binstall -y --no-confirm sccache || curl -L https://github.com/mozilla/sccache/releases/latest/download/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz | tar xz --strip-components=1 -C ${CARGO_HOME:-$HOME/.cargo}/bin --wildcards '*/sccache'
+            sccache --version && cargo nextest --version
+
+      # sccache cache is keyed on a STABLE prefix so it survives dep bumps.
+      - restore_cache:
+          name: Restore sccache cache
+          keys:
+            - sccache-v1-
 
       - restore_cache:
+          name: Restore cargo cache
           keys:
             - cargo-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
             - cargo-v2-
@@ -57,33 +79,47 @@ jobs:
           command: cargo fmt --all -- --check
 
       - run:
-          name: Build workspace (dev profile)
+          name: Build CLI (early-fail signal)
           working_directory: codex-rs
-          # Build the primary CLI binary explicitly for a fast fail signal,
-          # then the rest of the workspace with tests compiled.
+          # Fast fail: build the primary CLI binary first. The full test
+          # binaries are then compiled ONCE by `cargo nextest run` below.
           no_output_timeout: "60m"
-          command: |
-            cargo build --locked --bin recodex
-            cargo build --workspace --tests --locked
+          command: cargo build --locked --bin recodex
 
       - run:
-          name: Test workspace
+          name: Test workspace (nextest, compiles test bins once)
           working_directory: codex-rs
-          command: cargo test --workspace --no-fail-fast --locked
+          # nextest compiles the test binaries itself and runs them using far
+          # less memory than libtest. .config/nextest.toml's [profile.default]
+          # (retries=1, slow-timeout) is applied automatically in CI.
+          no_output_timeout: "60m"
+          command: cargo nextest run --workspace --locked --no-fail-fast
 
       - run:
           name: Clippy
           working_directory: codex-rs
+          # Shares target/ with the steps above (no needless recompile).
           # workspace lints (unwrap_used, expect_used, ...) are already
           # deny-by-default in Cargo.toml; -D warnings makes everything fatal.
           command: cargo clippy --workspace --tests --locked -- -D warnings
 
       - save_cache:
+          name: Save cargo cache
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
             - codex-rs/target
           key: cargo-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+
+      - save_cache:
+          name: Save sccache cache
+          paths:
+            - ~/.cache/sccache
+          key: sccache-v1-{{ epoch }}
+
+      - run:
+          name: sccache stats
+          command: sccache --show-stats || true
 
       - store_artifacts:
           path: codex-rs/target/debug/recodex
@@ -95,11 +131,18 @@ jobs:
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
-      # Release builds (opt-level=3) are much memory-heavier than debug —
-      # codex-tui/codex-core release lib builds peak ~8-10 GB each and two
-      # concurrent OOM on 16 GB. -j 1 (one rustc at a time) stays under the
-      # limit. Slower, but reliable.
+      # Keep -j 1. Measured on this workspace: even with [profile.dist]
+      # (lto=false, opt-level=2, codegen-units=16), the biggest crates peak at
+      # ~12.8 GB for a SINGLE rustc (codex-core), and -j 2 pushes the concurrent
+      # sum to ~19.4 GB -> OOM on the 16 GB runner. dist is still a major win at
+      # -j 1: it drops the thin-LTO silent stretch that made the old release
+      # build hit the 60m no-output timeout, so wall-clock is much shorter.
       CARGO_BUILD_JOBS: "1"
+      # sccache: avoid recompiling unchanged crates across dep bumps / releases.
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: "2G"
+      SCCACHE_DIR: ~/.cache/sccache
     steps:
       - checkout
 
@@ -110,13 +153,26 @@ jobs:
             sudo apt-get install -y --no-install-recommends \
               pkg-config libssl-dev libcap-dev lld clang llvm zip
 
+      # Install sccache + cargo-xwin from prebuilt binaries (no source compile).
       - run:
-          name: Add Windows MSVC target and cargo-xwin
+          name: Install sccache and cargo-xwin (prebuilt)
           command: |
-            rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0
-            cargo install --locked cargo-xwin
+            cargo binstall -y --no-confirm sccache cargo-xwin || \
+              (curl -L https://github.com/mozilla/sccache/releases/latest/download/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz | tar xz --strip-components=1 -C ${CARGO_HOME:-$HOME/.cargo}/bin --wildcards '*/sccache' && \
+               curl -L https://github.com/rust-cross/cargo-xwin/releases/latest/download/cargo-xwin-x86_64-unknown-linux-musl.tar.gz | tar xz -C ${CARGO_HOME:-$HOME/.cargo}/bin --wildcards '*/cargo-xwin')
+            sccache --version && cargo xwin --version
+
+      - run:
+          name: Add Windows MSVC target
+          command: rustup target add x86_64-pc-windows-msvc --toolchain 1.95.0
 
       - restore_cache:
+          name: Restore release sccache cache
+          keys:
+            - rel-sccache-v1-
+
+      - restore_cache:
+          name: Restore release cargo cache
           keys:
             - rel-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
             - rel-v2-
@@ -127,32 +183,45 @@ jobs:
           command: cargo fetch --locked
 
       - run:
-          name: Build + package Linux x86_64 release binary
+          name: Build + package Linux x86_64 binary (profile dist)
           working_directory: codex-rs
-          # Release rustc is silent for long stretches while optimizing the
-          # big crates; raise the no-output timeout well past the 10m default.
+          # Uses [profile.dist] (lto=false, opt-level=2, codegen-units=16):
+          # much lower RSS than release so -j 2 fits. Output lands in target/dist.
+          # Release rustc is silent for long stretches while optimizing the big
+          # crates; raise the no-output timeout well past the 10m default.
           no_output_timeout: "60m"
           command: |
-            cargo build --release --locked --bin recodex
-            strip target/release/recodex
-            (cd target/release && tar -czf ../../recodex-x86_64-unknown-linux-gnu.tar.gz recodex)
+            cargo build --profile dist --locked --bin recodex
+            strip target/dist/recodex
+            (cd target/dist && tar -czf ../../recodex-x86_64-unknown-linux-gnu.tar.gz recodex)
 
       - run:
-          name: Build + package Windows x86_64 release binary (cross via cargo-xwin)
+          name: Build + package Windows x86_64 binary (cross via cargo-xwin, profile dist)
           working_directory: codex-rs
           no_output_timeout: "60m"
           command: |
-            cargo xwin build --release --locked --target x86_64-pc-windows-msvc --bin recodex
-            llvm-strip --strip-debug target/x86_64-pc-windows-msvc/release/recodex.exe
-            (cd target/x86_64-pc-windows-msvc/release && zip -q recodex-x86_64-pc-windows-msvc.zip recodex.exe && mv recodex-x86_64-pc-windows-msvc.zip ../../../..)
+            cargo xwin build --profile dist --locked --target x86_64-pc-windows-msvc --bin recodex
+            llvm-strip --strip-debug target/x86_64-pc-windows-msvc/dist/recodex.exe
+            (cd target/x86_64-pc-windows-msvc/dist && zip -q recodex-x86_64-pc-windows-msvc.zip recodex.exe && mv recodex-x86_64-pc-windows-msvc.zip ../../../..)
 
       - save_cache:
+          name: Save release cargo cache
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
             - codex-rs/target
             - ~/.cache/cargo-xwin
           key: rel-v2-{{ checksum "codex-rs/Cargo.lock" }}-{{ checksum "codex-rs/rust-toolchain.toml" }}
+
+      - save_cache:
+          name: Save release sccache cache
+          paths:
+            - ~/.cache/sccache
+          key: rel-sccache-v1-{{ epoch }}
+
+      - run:
+          name: sccache stats
+          command: sccache --show-stats || true
 
       - store_artifacts:
           path: codex-rs/recodex-x86_64-unknown-linux-gnu.tar.gz
