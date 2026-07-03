@@ -13,7 +13,7 @@
 `recodex` is a coding agent that runs locally in your terminal. It tracks upstream Codex closely — everything Codex does works here too — and adds two things that matter when you point it at **your own model provider and key**:
 
 1. **A restored Chat Completions wire API** — use any OpenAI-compatible `/v1/chat/completions` endpoint (OpenRouter, ZAI, Together, Groq, Fireworks, Ollama, LM Studio, vLLM, …).
-2. **Automatic [models.dev](https://models.dev) metadata enrichment** — unknown model slugs get real display names + context windows, cached on disk, so BYOK models behave correctly instead of falling back to a conservative default.
+2. **Live model-catalog discovery + [models.dev](https://models.dev) enrichment** — for BYOK providers the model picker is populated from the provider's own `/v1/models` endpoint, and unknown slugs are enriched with a real display name + context window from models.dev when available (cached on disk), eliminating the `model metadata not found` warning for any model models.dev recognizes. Slugs models.dev doesn't know fall back to a safe default.
 
 ---
 
@@ -89,18 +89,21 @@ Point `base_url` at any OpenAI-compatible endpoint. The Chat Completions path is
 > [!NOTE]
 > `wire_api = "chat"` cannot be combined with `supports_websockets` — Chat Completions is HTTP/SSE only.
 
-### 2. Better model metadata via models.dev
+### 2. Live catalog discovery + models.dev enrichment
 
-When a model slug isn't in the bundled catalog or the provider's `/models` endpoint, upstream Codex falls back to a conservative hardcoded profile (e.g. a 272k context window) and emits a `model metadata not found` warning on every turn — which degrades context-window accounting for well-known third-party models.
+Upstream Codex only knows about OpenAI's own models: a third-party provider's models never appear in the picker, and any unknown slug falls back to a conservative hardcoded profile (e.g. a 272k context window) with a `model metadata not found` warning on every turn. `recodex` fixes both:
 
-`recodex` transparently enriches unknown slugs from the public **[models.dev](https://models.dev)** catalog: it fetches the real **display name** and **context window**, then **caches them on disk** so the lookup never repeats (negative results are remembered for 24h). It's best-effort and fail-safe — on any miss or network error you get the original fallback unchanged, so it can never leave you worse off than upstream. Net effect: plug in any provider and model slug, and the model picker, context accounting, and warnings just work.
+- **Catalog discovery.** For BYOK providers it queries the provider's own standard OpenAI-compatible `/v1/models` endpoint, so the models your key actually serves populate the picker. The listing is decoded into model entries and then enriched from **[models.dev](https://models.dev)** with the real **display name** and **context window**. If the provider has no `/v1/models` endpoint (or the request fails), `recodex` falls back to the bundled OpenAI catalog — so it can never leave you worse off than upstream.
+- **Per-slug enrichment.** A slug that isn't in the bundled or provider catalog is still looked up on models.dev, with results cached on disk so the lookup never repeats (negative results are remembered for 24h).
+
+Net effect: point `recodex` at any provider and the picker, context accounting, and metadata warnings are handled correctly — enriched where models.dev has data, a safe fallback where it doesn't.
 
 <details>
 <summary><b>How it works</b></summary>
 
-- The model manager queries `https://models.dev/models.json` (10s timeout) only for slugs missing from the bundled + provider catalogs.
-- Results are persisted to `models_dev_cache.json` under your Codex home directory.
-- The enrichment is read-only metadata (display name, context window); your configured slug and provider are never changed.
+- BYOK providers (those that don't require OpenAI auth, excluding Amazon Bedrock) are probed via `GET {base_url}/models` on startup and whenever the 5-minute cache expires. The standard `{ "data": [{ "id": … }] }` listing is decoded into minimal model entries.
+- Display name + context window are filled from `https://models.dev/models.json` (10s timeout) and persisted to `models_dev_cache.json` under your Codex home directory. A cache-first pass means a routine refresh doesn't re-hit models.dev once a slug has been resolved.
+- Enrichment is read-only metadata — your configured slug and provider are never changed.
 
 </details>
 
@@ -116,6 +119,13 @@ recodex "explain this codebase to me"
 ```
 
 Then sign in, or — the BYOK path this fork is built for — point it at your own provider in `~/.codex/config.toml` as shown above.
+
+Inside a session, switch models with the `/models` command:
+
+```shell
+/model              # open the model + reasoning-effort picker
+/models glm-5.2     # switch directly to a model slug (e.g. a BYOK model)
+```
 
 ---
 

@@ -9,7 +9,25 @@ use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
 use http::Method;
 use http::header::ETAG;
+use serde::Deserialize;
 use std::sync::Arc;
+
+/// Standard OpenAI-compatible `/v1/models` listing: `{ "data": [{ "id": .. }] }`.
+///
+/// The Codex backend serves a richer [`ModelsResponse`] with full per-model
+/// metadata. Generic BYOK providers (OpenRouter, ZAI, Together, Groq, Ollama,
+/// vLLM, ...) only expose ids, so when the rich payload fails to decode we fall
+/// back to this shape and derive a minimal [`ModelInfo`] per id.
+#[derive(Deserialize)]
+struct OpenAiStandardModelsList {
+    #[serde(default)]
+    data: Vec<OpenAiStandardModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiStandardModel {
+    id: String,
+}
 
 pub struct ModelsClient<T: HttpTransport> {
     session: EndpointSession<T>,
@@ -61,13 +79,27 @@ impl<T: HttpTransport> ModelsClient<T> {
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
 
-        let ModelsResponse { models } = serde_json::from_slice::<ModelsResponse>(&resp.body)
-            .map_err(|e| {
-                ApiError::Stream(format!(
-                    "failed to decode models response: {e}; body: {}",
-                    String::from_utf8_lossy(&resp.body)
-                ))
-            })?;
+        // Prefer the Codex-rich catalog; on decode failure fall back to the
+        // standard OpenAI-compatible `{data:[{id}]}` listing served by generic
+        // BYOK providers. Each advertised id becomes a minimal `ModelInfo`; the
+        // model manager enriches these (display name, context window) from
+        // models.dev.
+        let models = match serde_json::from_slice::<ModelsResponse>(&resp.body) {
+            Ok(ModelsResponse { models }) => models,
+            Err(rich_err) => match serde_json::from_slice::<OpenAiStandardModelsList>(&resp.body) {
+                Ok(list) => list
+                    .data
+                    .into_iter()
+                    .map(|model| ModelInfo::minimal_remote(model.id))
+                    .collect::<Vec<_>>(),
+                Err(standard_err) => {
+                    return Err(ApiError::Stream(format!(
+                        "failed to decode models response (rich: {rich_err}; standard: {standard_err}); body: {}",
+                        String::from_utf8_lossy(&resp.body)
+                    )))
+                }
+            },
+        };
 
         Ok((models, header_etag))
     }
@@ -119,6 +151,29 @@ mod tests {
                 status: StatusCode::OK,
                 headers,
                 body: body.into(),
+            })
+        }
+
+        async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+            Err(TransportError::Build("stream should not run".to_string()))
+        }
+    }
+
+    /// Transport that serves arbitrary raw bytes, for exercising non-`ModelsResponse`
+    /// payloads such as the standard OpenAI `/v1/models` listing.
+    #[derive(Clone)]
+    struct RawBodyTransport {
+        last_request: Arc<Mutex<Option<Request>>>,
+        body: Vec<u8>,
+    }
+
+    impl HttpTransport for RawBodyTransport {
+        async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+            *self.last_request.lock().unwrap() = Some(req);
+            Ok(Response {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: self.body.clone().into(),
             })
         }
 
@@ -240,6 +295,46 @@ mod tests {
         assert_eq!(models[0].slug, "gpt-test");
         assert_eq!(models[0].supported_in_api, true);
         assert_eq!(models[0].priority, 1);
+    }
+
+    #[tokio::test]
+    async fn list_models_parses_standard_openai_listing() {
+        // Generic BYOK providers serve the OpenAI-standard shape, not the
+        // Codex-rich catalog. Each id maps to a minimal, enrichment-ready entry.
+        let body = serde_json::to_vec(&json!({
+            "object": "list",
+            "data": [
+                {"id": "glm-5.2", "object": "model", "created": 0, "owned_by": "zai"},
+                {"id": "anthropic/claude-sonnet-4.5", "object": "model"}
+            ]
+        }))
+        .unwrap();
+        let transport = RawBodyTransport {
+            last_request: Arc::new(Mutex::new(None)),
+            body,
+        };
+
+        let client = ModelsClient::new(
+            transport,
+            provider("https://api.example.com/v1"),
+            Arc::new(DummyAuth),
+        );
+
+        let (models, _) = client
+            .list_models("0.1.0", HeaderMap::new())
+            .await
+            .expect("standard listing should parse");
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].slug, "glm-5.2");
+        assert_eq!(models[0].display_name, "glm-5.2");
+        assert_eq!(
+            models[0].visibility,
+            codex_protocol::openai_models::ModelVisibility::List
+        );
+        assert!(models[0].context_window.is_none());
+        assert!(!models[0].used_fallback_model_metadata);
+        assert_eq!(models[1].slug, "anthropic/claude-sonnet-4.5");
     }
 
     #[tokio::test]

@@ -272,6 +272,10 @@ impl ChatWidget {
                 self.open_model_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Models => {
+                self.open_model_popup();
+                self.defer_input_until_settings_applied();
+            }
             SlashCommand::Personality => {
                 self.open_personality_popup();
                 self.defer_input_until_settings_applied();
@@ -584,6 +588,27 @@ impl ChatWidget {
                     source: SlashCommandDispatchSource::Live,
                 },
             );
+            return;
+        }
+
+        if cmd == SlashCommand::Models {
+            // `/models <slug>` switches the active model directly. The first
+            // whitespace-delimited token is the slug; anything after it is
+            // ignored. Bare `/models` is routed to `dispatch_command`, which
+            // opens the picker, so we only handle the explicit-slug case here.
+            let slug = trimmed
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !self.is_session_configured() {
+                self.add_info_message(
+                    "Model selection is disabled until startup completes.".to_string(),
+                    /*hint*/ None,
+                );
+                return;
+            }
+            self.apply_model_and_effort(slug, /*effort*/ None);
             return;
         }
 
@@ -1070,6 +1095,7 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Models
             | SlashCommand::Personality
             | SlashCommand::Plan
             | SlashCommand::Goal

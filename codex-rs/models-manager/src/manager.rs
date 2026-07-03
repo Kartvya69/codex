@@ -43,6 +43,14 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
         &'a self,
         client_version: &'a str,
     ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>>;
+
+    /// Whether this is a third-party BYOK provider whose standard `/v1/models`
+    /// endpoint should be probed to populate the catalog. Defaults to `false`;
+    /// BYOK providers override this to opt into best-effort catalog discovery,
+    /// falling back to the bundled OpenAI catalog when the endpoint is absent.
+    fn prefer_remote_catalog(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async { false })
+    }
 }
 
 pub type ModelsEndpointFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -298,8 +306,13 @@ impl ModelsManager for OpenAiModelsManager {
                 // When the slug resolved to the hardcoded fallback, try to
                 // recover authoritative metadata from the public models.dev
                 // catalog before returning. On any miss the original fallback
-                // is preserved unchanged.
-                let model_info = if model_info.used_fallback_model_metadata {
+                // is preserved unchanged. Also enrich BYOK catalog entries that
+                // still lack a context window (e.g. models.dev was unreachable
+                // at fetch time) so the selected model is never left without
+                // authoritative metadata.
+                let model_info = if model_info.used_fallback_model_metadata
+                    || model_info.context_window.is_none()
+                {
                     models_dev::enrich(
                         &self.codex_home,
                         model_info,
@@ -390,7 +403,17 @@ impl OpenAiModelsManager {
 
     async fn fetch_and_update_models(&self) -> CoreResult<()> {
         let client_version = crate::client_version_to_whole();
-        let (models, etag) = self.endpoint_client.list_models(&client_version).await?;
+        let (mut models, etag) = self.endpoint_client.list_models(&client_version).await?;
+        // BYOK listings arrive as minimal entries (no context window). Enrich
+        // them from models.dev before caching so the picker, context
+        // accounting, and per-slug lookups all see real metadata. No-op for
+        // Codex-rich catalogs whose entries already carry a context window.
+        models_dev::enrich_many(
+            &self.codex_home,
+            &mut models,
+            self.models_dev_resolver.as_ref(),
+        )
+        .await;
         self.apply_remote_models(models.clone()).await;
         *self.etag.write().await = etag.clone();
         self.cache_manager
@@ -400,7 +423,9 @@ impl OpenAiModelsManager {
     }
 
     async fn should_refresh_models(&self) -> bool {
-        self.endpoint_client.uses_codex_backend().await || self.endpoint_client.has_command_auth()
+        self.endpoint_client.uses_codex_backend().await
+            || self.endpoint_client.has_command_auth()
+            || self.endpoint_client.prefer_remote_catalog().await
     }
 
     async fn get_etag(&self) -> Option<String> {
@@ -409,6 +434,13 @@ impl OpenAiModelsManager {
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
+        // A third-party BYOK provider's `/v1/models` listing is the authoritative
+        // catalog: replace the bundled OpenAI models with it rather than merging.
+        if !models.is_empty() && self.endpoint_client.prefer_remote_catalog().await {
+            *self.remote_models.write().await = models;
+            return;
+        }
+
         // Use the remote models list as the source of truth if it contains at least one
         // non-hidden model and the user is using ChatGPT auth.
         let should_use_remote_models_only = !models.is_empty()
